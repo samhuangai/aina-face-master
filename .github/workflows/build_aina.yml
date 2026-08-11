@@ -65,35 +65,35 @@ jobs:
                   print(p, im.size, im.mode)
           PY
 
-      - name: Fit AINA identity
+      - name: Fit AINA v10.1 identity
         env:
           PYTHONPATH: ${{ github.workspace }}/vendor/GNM
         run: |
-          python src/fit_aina.py \
+          python src/fit_aina_v101.py \
             --front references/AINA_APPROVED_FRONT.jpg \
             --three-quarter references/AINA_APPROVED_3Q.jpg \
             --side references/AINA_APPROVED_SIDE.jpg \
-            --steps 2600 \
-            --out output
+            --outer-steps 16 \
+            --out output_v101
 
       - name: Summarize build
         if: always()
         run: |
-          echo '## AINA Face Master' >> "$GITHUB_STEP_SUMMARY"
-          if [ -f output/AINA_FIT_REPORT.json ]; then
-            echo 'Automated multi-view GNM identity fit completed.' >> "$GITHUB_STEP_SUMMARY"
+          echo '## AINA Face Master v10.1' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f output_v101/AINA_FIT_REPORT_v10.1.json ]; then
+            echo 'Robust front-priority multi-view GNM identity fit completed.' >> "$GITHUB_STEP_SUMMARY"
             echo '```json' >> "$GITHUB_STEP_SUMMARY"
-            cat output/AINA_FIT_REPORT.json >> "$GITHUB_STEP_SUMMARY"
+            cat output_v101/AINA_FIT_REPORT_v10.1.json >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           else
             echo 'Fit report was not produced. Check job logs.' >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Upload AINA model artifact
+      - name: Upload AINA v10.1 model artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aina-face-master-build
-          path: output/**
+          name: aina-face-master-v10.1-build
+          path: output_v101/**
           if-no-files-found: warn
           retention-days: 30
