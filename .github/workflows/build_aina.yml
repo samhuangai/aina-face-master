@@ -1,0 +1,82 @@
+name: Build AINA Face Master
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - RUN_BUILD
+
+permissions:
+  contents: read
+
+jobs:
+  fit-aina:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout AINA repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install CPU PyTorch
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install fitting dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch Google GNM v3
+        run: |
+          git clone --depth 1 https://github.com/google/GNM.git vendor/GNM
+          if command -v git-lfs >/dev/null 2>&1; then
+            git -C vendor/GNM lfs install --local || true
+            git -C vendor/GNM lfs pull || true
+          fi
+          test -f vendor/GNM/gnm/shape/data/versions/v3_0/gnm_head.npz
+          ls -lh vendor/GNM/gnm/shape/data/versions/v3_0/gnm_head.npz
+
+      - name: Materialize approved references
+        run: |
+          base64 -d references/AINA_APPROVED_FRONT.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+          file references/AINA_APPROVED_*.jpg
+
+      - name: Fit AINA identity
+        env:
+          PYTHONPATH: ${{ github.workspace }}/vendor/GNM
+        run: |
+          python src/fit_aina.py \
+            --front references/AINA_APPROVED_FRONT.jpg \
+            --three-quarter references/AINA_APPROVED_3Q.jpg \
+            --side references/AINA_APPROVED_SIDE.jpg \
+            --steps 2600 \
+            --out output
+
+      - name: Summarize build
+        if: always()
+        run: |
+          echo '## AINA Face Master' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f output/AINA_FIT_REPORT.json ]; then
+            echo 'Automated multi-view GNM identity fit completed.' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat output/AINA_FIT_REPORT.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Fit report was not produced. Check job logs.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload AINA model artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aina-face-master-build
+          path: output/**
+          if-no-files-found: warn
+          retention-days: 30
