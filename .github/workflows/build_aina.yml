@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 jobs:
-  build-aina-v1021:
+  build-aina-v103:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -50,7 +50,7 @@ jobs:
           base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
           base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
 
-      - name: Rebuild v10.1 anatomical identity base
+      - name: Rebuild clean v10.1 anatomical identity base
         env:
           PYTHONPATH: ${{ github.workspace }}/vendor/GNM
         run: |
@@ -61,33 +61,33 @@ jobs:
             --outer-steps 16 \
             --out output_v101
 
-      - name: Sculpt v10.2.1 Laplacian identity corrective
+      - name: Sculpt v10.3 semantic identity regions
         env:
           PYTHONPATH: ${{ github.workspace }}/vendor/GNM
         run: |
-          python src/corrective_sculpt_v1021.py \
+          python src/semantic_sculpt_v103.py \
             --front references/AINA_APPROVED_FRONT.jpg \
             --three-quarter references/AINA_APPROVED_3Q.jpg \
             --side references/AINA_APPROVED_SIDE.jpg \
             --identity output_v101/AINA_identity_coefficients_v10.1.npy \
             --cameras output_v101/AINA_CAMERAS_v10.1.json \
-            --out output_v1021
+            --out output_v103
 
-      - name: Summarize v10.2.1
+      - name: Summarize v10.3
         if: always()
         run: |
-          echo '## AINA Face Master v10.2.1' >> "$GITHUB_STEP_SUMMARY"
-          if [ -f output_v1021/AINA_v10.2.1_REPORT.json ]; then
-            cat output_v1021/AINA_v10.2.1_REPORT.json >> "$GITHUB_STEP_SUMMARY"
+          echo '## AINA Face Master v10.3' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f output_v103/AINA_v10.3_REPORT.json ]; then
+            cat output_v103/AINA_v10.3_REPORT.json >> "$GITHUB_STEP_SUMMARY"
           else
             echo 'Report missing; inspect logs.' >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Upload AINA v10.2.1 actual mesh
+      - name: Upload AINA v10.3 actual mesh
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aina-face-master-v10.2.1-laplacian
-          path: output_v1021/**
+          name: aina-face-master-v10.3-semantic
+          path: output_v103/**
           if-no-files-found: warn
           retention-days: 30
