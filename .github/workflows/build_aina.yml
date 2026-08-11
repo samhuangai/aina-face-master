@@ -2,9 +2,6 @@ name: Build AINA Face Master
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - RUN_BUILD
   pull_request:
     branches:
       - main
@@ -19,7 +16,7 @@ permissions:
   contents: read
 
 jobs:
-  fit-aina:
+  reconstruct-aina-dense-face:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -29,71 +26,61 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: '3.10'
 
-      - name: Install CPU PyTorch
+      - name: Install reconstruction dependencies
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools wheel
+          pip install numpy==1.26.4 scipy opencv-python-headless matplotlib imageio imageio-ffmpeg pyyaml tqdm cython scikit-image onnxruntime
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Install fitting dependencies
-        run: pip install -r requirements.txt
-
-      - name: Fetch Google GNM v3
+      - name: Materialize approved AINA front reference
         run: |
-          git clone --depth 1 https://github.com/google/GNM.git vendor/GNM
-          if command -v git-lfs >/dev/null 2>&1; then
-            git -C vendor/GNM lfs install --local || true
-            git -C vendor/GNM lfs pull || true
-          fi
-          test -f vendor/GNM/gnm/shape/data/versions/v3_0/gnm_head.npz
-          ls -lh vendor/GNM/gnm/shape/data/versions/v3_0/gnm_head.npz
-
-      - name: Materialize and verify approved references
-        run: |
-          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
-          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
-          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
-          file references/AINA_APPROVED_*.jpg
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > AINA_APPROVED_FRONT.jpg
           python - <<'PY'
           from PIL import Image
-          from pathlib import Path
-          for p in sorted(Path('references').glob('AINA_APPROVED_*.jpg')):
-              with Image.open(p) as im:
-                  im.load()
-                  print(p, im.size, im.mode)
+          im=Image.open('AINA_APPROVED_FRONT.jpg'); im.load(); print(im.size, im.mode)
           PY
 
-      - name: Fit AINA v10.1 identity
-        env:
-          PYTHONPATH: ${{ github.workspace }}/vendor/GNM
+      - name: Fetch and build 3DDFA V2
         run: |
-          python src/fit_aina_v101.py \
-            --front references/AINA_APPROVED_FRONT.jpg \
-            --three-quarter references/AINA_APPROVED_3Q.jpg \
-            --side references/AINA_APPROVED_SIDE.jpg \
-            --outer-steps 16 \
-            --out output_v101
-
-      - name: Summarize build
-        if: always()
-        run: |
-          echo '## AINA Face Master v10.1' >> "$GITHUB_STEP_SUMMARY"
-          if [ -f output_v101/AINA_FIT_REPORT_v10.1.json ]; then
-            echo 'Robust front-priority multi-view GNM identity fit completed.' >> "$GITHUB_STEP_SUMMARY"
-            echo '```json' >> "$GITHUB_STEP_SUMMARY"
-            cat output_v101/AINA_FIT_REPORT_v10.1.json >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo 'Fit report was not produced. Check job logs.' >> "$GITHUB_STEP_SUMMARY"
+          git clone --depth 1 https://github.com/cleardusk/3DDFA_V2.git vendor/3DDFA_V2
+          if command -v git-lfs >/dev/null 2>&1; then
+            git -C vendor/3DDFA_V2 lfs install --local || true
+            git -C vendor/3DDFA_V2 lfs pull || true
           fi
+          cd vendor/3DDFA_V2
+          sh ./build.sh
+          ls -lh weights models configs | head -100
 
-      - name: Upload AINA v10.1 model artifact
+      - name: Reconstruct AINA dense 3D face
+        run: |
+          mkdir -p output_3ddfa
+          cp AINA_APPROVED_FRONT.jpg vendor/3DDFA_V2/examples/inputs/aina_approved_front.jpg
+          cd vendor/3DDFA_V2
+          python demo.py -f examples/inputs/aina_approved_front.jpg -o obj --onnx --show_flag false
+          python demo.py -f examples/inputs/aina_approved_front.jpg -o ply --onnx --show_flag false
+          find examples/results -maxdepth 1 -type f -name 'aina_approved_front*' -print -exec ls -lh {} \;
+          cp examples/results/aina_approved_front* "$GITHUB_WORKSPACE/output_3ddfa/" || true
+
+      - name: Verify reconstructed geometry
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import trimesh
+          out=Path('output_3ddfa')
+          fs=list(out.glob('*.obj'))+list(out.glob('*.ply'))
+          if not fs: raise SystemExit('No reconstructed OBJ/PLY produced')
+          for p in fs:
+              m=trimesh.load(p, process=False)
+              print(p, 'vertices=',len(m.vertices),'faces=',len(m.faces),'bounds=',m.bounds.tolist())
+          PY
+
+      - name: Upload dense reconstruction
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aina-face-master-v10.1-build
-          path: output_v101/**
+          name: aina-3ddfa-dense-reconstruction
+          path: output_3ddfa/**
           if-no-files-found: warn
           retention-days: 30
