@@ -31,7 +31,7 @@ jobs:
       - name: Install reconstruction dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install numpy==1.26.4 scipy opencv-python-headless matplotlib imageio imageio-ffmpeg pyyaml tqdm cython scikit-image onnxruntime
+          pip install numpy==1.26.4 scipy opencv-python-headless matplotlib imageio imageio-ffmpeg pyyaml tqdm cython scikit-image onnx onnxruntime onnxscript
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
       - name: Materialize approved AINA front reference
