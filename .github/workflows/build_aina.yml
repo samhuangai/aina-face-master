@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 jobs:
-  build-aina-v1062:
+  build-aina-v1063:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -70,37 +70,33 @@ jobs:
             --cameras output_v101/AINA_CAMERAS_v10.1.json \
             --out output_v1061
 
-      - name: Build v10.6.2 topology-native eye and facial micro polish
-        env:
-          PYTHONPATH: ${{ github.workspace }}/vendor/GNM:${{ github.workspace }}/src
+      - name: Build v10.6.3 Face Feature Lock
         run: |
-          python src/identity_micro_polish_v1062.py \
+          python src/face_feature_lock_v1063.py \
             --base-full output_v1061/AINA_FACE_MASTER_GNM_v10.6.1_FULL_TOPOLOGY.obj \
             --base-skin output_v1061/AINA_FACE_MASTER_SKIN_CLAY_v10.6.1.obj \
             --front references/AINA_APPROVED_FRONT.jpg \
             --cameras output_v101/AINA_CAMERAS_v10.1.json \
-            --out output_v1062
-          cp output_v1062/QA/AINA_FULL_CLAY_5VIEW_v10.6.1.png output_v1062/QA/AINA_FULL_CLAY_5VIEW_v10.6.2.png || true
-          cp output_v1062/QA/AINA_SKIN_CLAY_5VIEW_v10.6.1.png output_v1062/QA/AINA_SKIN_CLAY_5VIEW_v10.6.2.png || true
+            --out output_v1063
 
-      - name: Summarize v10.6.2
+      - name: Summarize v10.6.3
         if: always()
         run: |
-          echo '## AINA Face Master v10.6.2 Identity Micro Polish' >> "$GITHUB_STEP_SUMMARY"
-          if [ -f output_v1062/AINA_v10.6.2_REPORT.json ]; then
-            echo 'True eyelid rim solved through GNM eye expression basis; facial changes remain bounded.' >> "$GITHUB_STEP_SUMMARY"
+          echo '## AINA Face Master v10.6.3 Face Feature Lock' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f output_v1063/AINA_v10.6.3_REPORT.json ]; then
+            echo 'Feature-only sculpt on v10.6.1. No v10.6.2 eye-orbit enlargement inherited.' >> "$GITHUB_STEP_SUMMARY"
             echo '```json' >> "$GITHUB_STEP_SUMMARY"
-            cat output_v1062/AINA_v10.6.2_REPORT.json >> "$GITHUB_STEP_SUMMARY"
+            cat output_v1063/AINA_v10.6.3_REPORT.json >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           else
-            echo 'v10.6.2 report missing; inspect logs.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'v10.6.3 report missing; inspect logs.' >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Upload AINA v10.6.2 actual mesh and QA
+      - name: Upload AINA v10.6.3 model files and QA
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aina-face-master-v10.6.2-micro-polish
-          path: output_v1062/**
+          name: aina-face-master-v10.6.3-face-feature-lock
+          path: output_v1063/**
           if-no-files-found: warn
           retention-days: 30
