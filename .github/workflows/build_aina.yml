@@ -31,7 +31,7 @@ jobs:
       - name: Install reconstruction dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install numpy==1.26.4 scipy opencv-python-headless matplotlib imageio imageio-ffmpeg pyyaml tqdm cython scikit-image onnx onnxruntime onnxscript
+          pip install numpy==1.26.4 scipy opencv-python-headless matplotlib imageio imageio-ffmpeg pyyaml tqdm cython scikit-image
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
       - name: Materialize approved AINA front reference
@@ -58,8 +58,8 @@ jobs:
           mkdir -p output_3ddfa
           cp AINA_APPROVED_FRONT.jpg vendor/3DDFA_V2/examples/inputs/aina_approved_front.jpg
           cd vendor/3DDFA_V2
-          python demo.py -f examples/inputs/aina_approved_front.jpg -o obj --onnx --show_flag false
-          python demo.py -f examples/inputs/aina_approved_front.jpg -o ply --onnx --show_flag false
+          python demo.py -f examples/inputs/aina_approved_front.jpg -m cpu -o obj --show_flag false
+          python demo.py -f examples/inputs/aina_approved_front.jpg -m cpu -o ply --show_flag false
           find examples/results -maxdepth 1 -type f -name 'aina_approved_front*' -print -exec ls -lh {} \;
           cp examples/results/aina_approved_front* "$GITHUB_WORKSPACE/output_3ddfa/" || true
 
