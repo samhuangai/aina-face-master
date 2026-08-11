@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 jobs:
-  build-aina-v103:
+  build-aina-v104:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -61,7 +61,7 @@ jobs:
             --outer-steps 16 \
             --out output_v101
 
-      - name: Sculpt v10.3 semantic identity regions
+      - name: Rebuild v10.3 stable semantic base
         env:
           PYTHONPATH: ${{ github.workspace }}/vendor/GNM
         run: |
@@ -73,21 +73,31 @@ jobs:
             --cameras output_v101/AINA_CAMERAS_v10.1.json \
             --out output_v103
 
-      - name: Summarize v10.3
+      - name: Sculpt v10.4 eyelids and V-jaw
+        env:
+          PYTHONPATH: ${{ github.workspace }}/vendor/GNM
+        run: |
+          python src/identity_lock_v104_fix.py \
+            --base-full output_v103/AINA_FACE_MASTER_GNM_v10.3_FULL_TOPOLOGY.obj \
+            --front references/AINA_APPROVED_FRONT.jpg \
+            --cameras output_v101/AINA_CAMERAS_v10.1.json \
+            --out output_v104
+
+      - name: Summarize v10.4
         if: always()
         run: |
-          echo '## AINA Face Master v10.3' >> "$GITHUB_STEP_SUMMARY"
-          if [ -f output_v103/AINA_v10.3_REPORT.json ]; then
-            cat output_v103/AINA_v10.3_REPORT.json >> "$GITHUB_STEP_SUMMARY"
+          echo '## AINA Face Master v10.4' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f output_v104/AINA_v10.4_REPORT.json ]; then
+            cat output_v104/AINA_v10.4_REPORT.json >> "$GITHUB_STEP_SUMMARY"
           else
             echo 'Report missing; inspect logs.' >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Upload AINA v10.3 actual mesh
+      - name: Upload AINA v10.4 actual mesh and QA
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aina-face-master-v10.3-semantic
-          path: output_v103/**
+          name: aina-face-master-v10.4-identity-lock
+          path: output_v104/**
           if-no-files-found: warn
           retention-days: 30
