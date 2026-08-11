@@ -31,7 +31,7 @@ jobs:
       - name: Install reconstruction dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install numpy==1.26.4 scipy opencv-python-headless matplotlib imageio imageio-ffmpeg pyyaml tqdm cython scikit-image
+          pip install numpy==1.26.4 scipy opencv-python-headless matplotlib imageio imageio-ffmpeg pyyaml tqdm cython scikit-image trimesh
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
       - name: Materialize approved AINA front reference
@@ -51,25 +51,29 @@ jobs:
           fi
           python - <<'PY'
           from pathlib import Path
+          import re
           root=Path('vendor/3DDFA_V2')
-          replacements={
-              'np.long':'np.int64',
-              'np.float)':'float)',
-              'np.float,':'float,',
-              'np.int)':'int)',
-              'np.int,':'int,',
-              'np.bool)':'bool)',
-              'np.bool,':'bool,',
-          }
+          patterns=[
+              (r'\bnp\.long\b','np.int64'),
+              (r'\bnp\.int\b','np.int64'),
+              (r'\bnp\.float\b','float'),
+              (r'\bnp\.bool\b','bool'),
+          ]
           changed=[]
-          for p in root.rglob('*.py'):
-              s=p.read_text(encoding='utf-8')
-              old=s
-              for a,b in replacements.items(): s=s.replace(a,b)
-              if s!=old:
-                  p.write_text(s,encoding='utf-8'); changed.append(str(p))
+          for glob in ('*.py','*.pyx','*.pxd'):
+              for p in root.rglob(glob):
+                  try:
+                      s=p.read_text(encoding='utf-8')
+                  except UnicodeDecodeError:
+                      continue
+                  old=s
+                  for pat,repl in patterns:
+                      s=re.sub(pat,repl,s)
+                  if s!=old:
+                      p.write_text(s,encoding='utf-8')
+                      changed.append(str(p))
           print('patched', len(changed), 'files')
-          print('\n'.join(changed[:50]))
+          print('\n'.join(changed[:100]))
           PY
           cd vendor/3DDFA_V2
           sh ./build.sh
@@ -95,6 +99,8 @@ jobs:
           if not fs: raise SystemExit('No reconstructed OBJ/PLY produced')
           for p in fs:
               m=trimesh.load(p, process=False)
+              if hasattr(m,'geometry'):
+                  m=trimesh.util.concatenate(tuple(m.geometry.values()))
               print(p, 'vertices=',len(m.vertices),'faces=',len(m.faces),'bounds=',m.bounds.tolist())
           PY
 
