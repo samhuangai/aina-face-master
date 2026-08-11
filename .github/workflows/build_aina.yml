@@ -5,6 +5,15 @@ on:
   push:
     paths:
       - RUN_BUILD
+  pull_request:
+    branches:
+      - main
+    paths:
+      - RUN_BUILD_PR
+      - src/**
+      - requirements.txt
+      - references/**
+      - .github/workflows/build_aina.yml
 
 permissions:
   contents: read
