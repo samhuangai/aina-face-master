@@ -1,0 +1,19 @@
+# CPU PyTorch is installed separately by GitHub Actions.
+numpy==1.26.4
+scipy>=1.12,<2
+pillow>=10
+matplotlib>=3.8
+opencv-python-headless>=4.9
+trimesh>=4.4
+face-alignment==1.4.1
+networkx>=3
+lxml>=5
+rtree>=1.2
+shapely>=2
+absl-py>=2
+etils>=1.9
+immutabledict>=4
+importlib_resources>=6
+opt-einsum>=3.3
+tqdm>=4.66
+typeguard>=4
