@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 jobs:
-  build-aina-v106:
+  build-aina-v1061:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -50,7 +50,7 @@ jobs:
           base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
           base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
 
-      - name: Rebuild clean v10.1 anatomical identity base
+      - name: Rebuild clean v10.1 anatomical base
         env:
           PYTHONPATH: ${{ github.workspace }}/vendor/GNM
         run: |
@@ -61,65 +61,33 @@ jobs:
             --outer-steps 16 \
             --out output_v101
 
-      - name: Rebuild v10.3 stable semantic base
-        env:
-          PYTHONPATH: ${{ github.workspace }}/vendor/GNM
+      - name: Build v10.6.1 single-pass reset sculpt
         run: |
-          python src/semantic_sculpt_v103_fix.py \
-            --front references/AINA_APPROVED_FRONT.jpg \
-            --three-quarter references/AINA_APPROVED_3Q.jpg \
-            --side references/AINA_APPROVED_SIDE.jpg \
-            --identity output_v101/AINA_identity_coefficients_v10.1.npy \
-            --cameras output_v101/AINA_CAMERAS_v10.1.json \
-            --out output_v103
-
-      - name: Rebuild v10.4 symmetric eyelid and V-jaw base
-        env:
-          PYTHONPATH: ${{ github.workspace }}/vendor/GNM
-        run: |
-          python src/identity_lock_v104_fix.py \
-            --base-full output_v103/AINA_FACE_MASTER_GNM_v10.3_FULL_TOPOLOGY.obj \
+          python src/reset_identity_v1061.py \
+            --base-full output_v101/AINA_FACE_MASTER_GNM_v10.1.obj \
+            --base-skin output_v101/AINA_FACE_MASTER_SKIN_CLAY_v10.1.obj \
             --front references/AINA_APPROVED_FRONT.jpg \
             --cameras output_v101/AINA_CAMERAS_v10.1.json \
-            --out output_v104
+            --out output_v1061
 
-      - name: Rebuild v10.5 topology-native eye basis base
-        env:
-          PYTHONPATH: ${{ github.workspace }}/vendor/GNM
-        run: |
-          python src/eye_basis_lock_v105.py \
-            --base-full output_v104/AINA_FACE_MASTER_GNM_v10.4_FULL_TOPOLOGY.obj \
-            --front references/AINA_APPROVED_FRONT.jpg \
-            --identity output_v101/AINA_identity_coefficients_v10.1.npy \
-            --cameras output_v101/AINA_CAMERAS_v10.1.json \
-            --out output_v105
-
-      - name: Build v10.6 art-directed identity rebuild
-        env:
-          PYTHONPATH: ${{ github.workspace }}/vendor/GNM
-        run: |
-          python src/art_directed_rebuild_v106.py \
-            --base-full output_v105/AINA_FACE_MASTER_GNM_v10.5_FULL_TOPOLOGY.obj \
-            --front references/AINA_APPROVED_FRONT.jpg \
-            --identity output_v101/AINA_identity_coefficients_v10.1.npy \
-            --cameras output_v101/AINA_CAMERAS_v10.1.json \
-            --out output_v106
-
-      - name: Summarize v10.6
+      - name: Summarize v10.6.1
         if: always()
         run: |
-          echo '## AINA Face Master v10.6' >> "$GITHUB_STEP_SUMMARY"
-          if [ -f output_v106/AINA_v10.6_REPORT.json ]; then
-            cat output_v106/AINA_v10.6_REPORT.json >> "$GITHUB_STEP_SUMMARY"
+          echo '## AINA Face Master v10.6.1 Reset Sculpt' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f output_v1061/AINA_v10.6.1_REPORT.json ]; then
+            echo 'Clean reset from v10.1; no v10.3-v10.6 stacked deformation.' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat output_v1061/AINA_v10.6.1_REPORT.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
           else
-            echo 'v10.6 report missing; inspect logs.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'v10.6.1 report missing; inspect logs.' >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Upload AINA v10.6 actual mesh and QA
+      - name: Upload AINA v10.6.1 actual mesh and QA
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aina-face-master-v10.6-art-directed
-          path: output_v106/**
+          name: aina-face-master-v10.6.1-reset
+          path: output_v1061/**
           if-no-files-found: warn
           retention-days: 30
