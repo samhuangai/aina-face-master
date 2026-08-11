@@ -42,13 +42,35 @@ jobs:
           im=Image.open('AINA_APPROVED_FRONT.jpg'); im.load(); print(im.size, im.mode)
           PY
 
-      - name: Fetch and build 3DDFA V2
+      - name: Fetch, patch and build 3DDFA V2
         run: |
           git clone --depth 1 https://github.com/cleardusk/3DDFA_V2.git vendor/3DDFA_V2
           if command -v git-lfs >/dev/null 2>&1; then
             git -C vendor/3DDFA_V2 lfs install --local || true
             git -C vendor/3DDFA_V2 lfs pull || true
           fi
+          python - <<'PY'
+          from pathlib import Path
+          root=Path('vendor/3DDFA_V2')
+          replacements={
+              'np.long':'np.int64',
+              'np.float)':'float)',
+              'np.float,':'float,',
+              'np.int)':'int)',
+              'np.int,':'int,',
+              'np.bool)':'bool)',
+              'np.bool,':'bool,',
+          }
+          changed=[]
+          for p in root.rglob('*.py'):
+              s=p.read_text(encoding='utf-8')
+              old=s
+              for a,b in replacements.items(): s=s.replace(a,b)
+              if s!=old:
+                  p.write_text(s,encoding='utf-8'); changed.append(str(p))
+          print('patched', len(changed), 'files')
+          print('\n'.join(changed[:50]))
+          PY
           cd vendor/3DDFA_V2
           sh ./build.sh
           ls -lh weights models configs | head -100
