@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 jobs:
-  build-aina-v105:
+  build-aina-v106:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -83,7 +83,7 @@ jobs:
             --cameras output_v101/AINA_CAMERAS_v10.1.json \
             --out output_v104
 
-      - name: Bake v10.5 topology-native eye opening and finish nose jaw
+      - name: Rebuild v10.5 topology-native eye basis base
         env:
           PYTHONPATH: ${{ github.workspace }}/vendor/GNM
         run: |
@@ -94,21 +94,32 @@ jobs:
             --cameras output_v101/AINA_CAMERAS_v10.1.json \
             --out output_v105
 
-      - name: Summarize v10.5
+      - name: Build v10.6 art-directed identity rebuild
+        env:
+          PYTHONPATH: ${{ github.workspace }}/vendor/GNM
+        run: |
+          python src/art_directed_rebuild_v106.py \
+            --base-full output_v105/AINA_FACE_MASTER_GNM_v10.5_FULL_TOPOLOGY.obj \
+            --front references/AINA_APPROVED_FRONT.jpg \
+            --identity output_v101/AINA_identity_coefficients_v10.1.npy \
+            --cameras output_v101/AINA_CAMERAS_v10.1.json \
+            --out output_v106
+
+      - name: Summarize v10.6
         if: always()
         run: |
-          echo '## AINA Face Master v10.5' >> "$GITHUB_STEP_SUMMARY"
-          if [ -f output_v105/AINA_v10.5_REPORT.json ]; then
-            cat output_v105/AINA_v10.5_REPORT.json >> "$GITHUB_STEP_SUMMARY"
+          echo '## AINA Face Master v10.6' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f output_v106/AINA_v10.6_REPORT.json ]; then
+            cat output_v106/AINA_v10.6_REPORT.json >> "$GITHUB_STEP_SUMMARY"
           else
-            echo 'v10.5 report missing; inspect logs.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'v10.6 report missing; inspect logs.' >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Upload AINA v10.5 actual mesh and QA
+      - name: Upload AINA v10.6 actual mesh and QA
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aina-face-master-v10.5-eye-basis
-          path: output_v105/**
+          name: aina-face-master-v10.6-art-directed
+          path: output_v106/**
           if-no-files-found: warn
           retention-days: 30
