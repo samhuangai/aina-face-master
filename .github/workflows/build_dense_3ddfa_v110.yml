@@ -1,0 +1,72 @@
+name: Build AINA v11 Dense 3DDFA Reconstruction
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - src/reconstruct_aina_dense_3ddfa.py
+      - .github/workflows/build_dense_3ddfa_v110.yml
+      - references/AINA_APPROVED_FRONT_V2.jpg.b64
+      - references/AINA_APPROVED_3Q.jpg.b64
+      - references/AINA_APPROVED_SIDE.jpg.b64
+
+permissions:
+  contents: read
+
+jobs:
+  reconstruct:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install numpy==1.26.4 scipy opencv-python-headless pyyaml cython scikit-image tqdm matplotlib trimesh pillow
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - name: Materialize references
+        run: |
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+      - name: Clone and patch 3DDFA V2
+        run: |
+          git clone --depth 1 https://github.com/cleardusk/3DDFA_V2.git vendor/3DDFA_V2
+          git -C vendor/3DDFA_V2 lfs install --local || true
+          git -C vendor/3DDFA_V2 lfs pull || true
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('vendor/3DDFA_V2')
+          for glob in ('*.py','*.pyx','*.pxd'):
+            for p in root.rglob(glob):
+              try: s=p.read_text()
+              except: continue
+              old=s
+              for a,b in [(r'\bnp\.long\b','np.int64'),(r'\bnp\.int\b','np.int64'),(r'\bnp\.float\b','float'),(r'\bnp\.bool\b','bool')]: s=re.sub(a,b,s)
+              if s!=old: p.write_text(s)
+          PY
+          cd vendor/3DDFA_V2 && sh ./build.sh
+      - name: Reconstruct dense AINA identity
+        run: python src/reconstruct_aina_dense_3ddfa.py
+      - name: Summarize
+        if: always()
+        run: |
+          echo '## AINA Dense Reconstruction v11.0' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f output_dense_3ddfa/AINA_DENSE_v11.0_REPORT.json ]; then
+            cat output_dense_3ddfa/AINA_DENSE_v11.0_REPORT.json >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Dense report missing; inspect logs.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload dense model and QA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aina-v11-dense-3ddfa
+          path: output_dense_3ddfa/**
+          if-no-files-found: warn
+          retention-days: 30
