@@ -1,0 +1,57 @@
+name: Build AINA v11.1 MediaPipe 468 Target
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - src/reconstruct_aina_mediapipe468.py
+      - .github/workflows/build_mediapipe468_v111.yml
+      - references/AINA_APPROVED_FRONT_V2.jpg.b64
+      - references/AINA_APPROVED_3Q.jpg.b64
+      - references/AINA_APPROVED_SIDE.jpg.b64
+
+permissions:
+  contents: read
+
+jobs:
+  reconstruct:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy==1.26.4 mediapipe==0.10.21 opencv-python-headless trimesh matplotlib pillow
+      - name: Materialize references and canonical topology
+        run: |
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+          mkdir -p vendor
+          curl -L --fail --retry 3 \
+            https://raw.githubusercontent.com/google-ai-edge/mediapipe/master/mediapipe/modules/face_geometry/data/canonical_face_model.obj \
+            -o vendor/canonical_face_model.obj
+      - name: Build AINA 468-point face target
+        run: python src/reconstruct_aina_mediapipe468.py
+      - name: Summarize
+        if: always()
+        run: |
+          echo '## AINA v11.1 MediaPipe 468 Target' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f output_mediapipe468/AINA_MP468_v11.1_REPORT.json ]; then
+            cat output_mediapipe468/AINA_MP468_v11.1_REPORT.json >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'MP468 report missing; inspect logs.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload model and QA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aina-v11.1-mediapipe468
+          path: output_mediapipe468/**
+          if-no-files-found: warn
+          retention-days: 30
