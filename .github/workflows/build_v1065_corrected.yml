@@ -1,0 +1,58 @@
+name: Build AINA v10.6.5 Corrected Identity
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - src/fit_aina_v1065_corrected.py
+      - .github/workflows/build_v1065_corrected.yml
+      - references/AINA_TARGET_3DDFA_SPARSE_68.json
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: Fetch GNM
+        run: |
+          git clone --depth 1 https://github.com/google/GNM.git vendor/GNM
+          git -C vendor/GNM lfs install --local || true
+          git -C vendor/GNM lfs pull || true
+      - name: Materialize references
+        run: |
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+      - name: Fit corrected identity
+        env:
+          PYTHONPATH: ${{ github.workspace }}/vendor/GNM:${{ github.workspace }}/src
+        run: |
+          python src/fit_aina_v1065_corrected.py \
+            --front references/AINA_APPROVED_FRONT.jpg \
+            --three-quarter references/AINA_APPROVED_3Q.jpg \
+            --side references/AINA_APPROVED_SIDE.jpg \
+            --front-landmarks references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --outer-steps 18 \
+            --out output_v1065
+      - name: Upload actual model
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aina-face-master-v10.6.5-corrected
+          path: output_v1065/**
+          if-no-files-found: warn
+          retention-days: 30
