@@ -1,0 +1,84 @@
+name: Build AINA v10.7 Effect Sculpt
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - src/sculpt_aina_v1070.py
+      - src/fit_aina_v1065_corrected.py
+      - .github/workflows/build_v1070_effect_sculpt.yml
+      - references/AINA_APPROVED_FRONT_V2.jpg.b64
+      - references/AINA_APPROVED_3Q.jpg.b64
+      - references/AINA_APPROVED_SIDE.jpg.b64
+      - references/AINA_TARGET_3DDFA_SPARSE_68.json
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: Fetch GNM
+        run: |
+          git clone --depth 1 https://github.com/google/GNM.git vendor/GNM
+          git -C vendor/GNM lfs install --local || true
+          git -C vendor/GNM lfs pull || true
+          test -f vendor/GNM/gnm/shape/data/versions/v3_0/gnm_head.npz
+      - name: Materialize references
+        run: |
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+      - name: Rebuild corrected v10.6.5 base
+        env:
+          PYTHONPATH: ${{ github.workspace }}/vendor/GNM:${{ github.workspace }}/src
+        run: |
+          python src/fit_aina_v1065_corrected.py \
+            --front references/AINA_APPROVED_FRONT.jpg \
+            --three-quarter references/AINA_APPROVED_3Q.jpg \
+            --side references/AINA_APPROVED_SIDE.jpg \
+            --front-landmarks references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --outer-steps 18 \
+            --out output_v1065
+      - name: Sculpt v10.7 outside identity manifold
+        env:
+          PYTHONPATH: ${{ github.workspace }}/vendor/GNM:${{ github.workspace }}/src
+        run: |
+          python src/sculpt_aina_v1070.py \
+            --base-full output_v1065/AINA_FACE_MASTER_GNM_v10.6.5_CORRECTED.obj \
+            --front references/AINA_APPROVED_FRONT.jpg \
+            --three-quarter references/AINA_APPROVED_3Q.jpg \
+            --side references/AINA_APPROVED_SIDE.jpg \
+            --front-landmarks references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --cameras output_v1065/AINA_CAMERAS_v10.6.5.json \
+            --out output_v1070
+      - name: Summarize v10.7
+        if: always()
+        run: |
+          echo '## AINA Face Master v10.7 Effect-Art Sculpt' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f output_v1070/AINA_v10.7.0_REPORT.json ]; then
+            cat output_v1070/AINA_v10.7.0_REPORT.json >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'v10.7 report missing; inspect logs.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload v10.7 model and QA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aina-face-master-v10.7-effect-sculpt
+          path: output_v1070/**
+          if-no-files-found: warn
+          retention-days: 30
