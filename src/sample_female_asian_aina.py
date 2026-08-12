@@ -38,8 +38,8 @@ def projected_score(lm,target):
     def dist(a,b,x=pred): return float(np.linalg.norm(x[a]-x[b]))
     def tdist(a,b): return float(np.linalg.norm(target[a]-target[b]))
     ratios=[]
-    for a,b,ww in [(36,39,1.2),(42,45,1.2),(31,35,1.8),(48,54,1.6),(0,16,.7),(6,10,1.0)]:
-        ratios.append((math.log(max(dist(a,b),1e-6)/max(tdist(a,b),1e-6)),ww))
+    for a0,b0,ww in [(36,39,1.2),(42,45,1.2),(31,35,1.8),(48,54,1.6),(0,16,.7),(6,10,1.0)]:
+        ratios.append((math.log(max(dist(a0,b0),1e-6)/max(tdist(a0,b0),1e-6)),ww))
     ec=np.linalg.norm(pred[36:42].mean(0)-pred[42:48].mean(0)); tec=np.linalg.norm(target[36:42].mean(0)-target[42:48].mean(0)); ratios.append((math.log(ec/tec),1.3))
     ratio_pen=sum(ww*r*r for r,ww in ratios)/sum(ww for _,ww in ratios)
     return base+0.055*math.sqrt(ratio_pen),base,R,s,b,pred
