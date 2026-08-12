@@ -1,0 +1,98 @@
+name: Rebuild AINA with FaceVerse V4
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - src/export_faceverse_aina.py
+      - references/**
+      - .github/workflows/faceverse_v4_aina.yml
+
+permissions:
+  contents: read
+
+jobs:
+  rebuild-faceverse-v4:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout AINA repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install mediapipe==0.10.20 Pillow==10.2.0 opencv-python-headless==4.10.0.84 cython==3.0.11 numpy==1.26.4 trimesh scipy
+
+      - name: Fetch FaceVerse V4 source
+        run: |
+          git clone --depth 1 https://github.com/LizhenWangT/FaceVerse_v4.git vendor/FaceVerse_v4
+          cd vendor/FaceVerse_v4/Sim3DR
+          python setup.py build_ext --inplace
+
+      - name: Download FaceVerse V4 model and checkpoints
+        run: |
+          mkdir -p vendor/FaceVerse_v4/data
+          curl -L --fail --retry 3 --retry-delay 3 -o vendor/FaceVerse_v4/data/faceverse_v4_2.npy 'https://1drv.ms/u/c/b8eab7b1820a6fa4/EWJOsgGxPMZDkl8xJ_QZB30BpcjNoMVGK9mnUPq5n9-lyw?e=4GvEs9&download=1'
+          curl -L --fail --retry 3 --retry-delay 3 -o vendor/FaceVerse_v4/data/faceverse_resnet50.pth 'https://1drv.ms/u/c/b8eab7b1820a6fa4/ETfT_C9Oz1FFlykJdtj3h6MBR1KvQb5BYwesxFykH-7BZA?e=7ti1yj&download=1'
+          curl -L --fail --retry 3 --retry-delay 3 -o vendor/FaceVerse_v4/data/face_landmarker.task 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task'
+          ls -lh vendor/FaceVerse_v4/data
+          python - <<'PY'
+          from pathlib import Path
+          checks = {
+              'vendor/FaceVerse_v4/data/faceverse_v4_2.npy': 5_000_000,
+              'vendor/FaceVerse_v4/data/faceverse_resnet50.pth': 20_000_000,
+              'vendor/FaceVerse_v4/data/face_landmarker.task': 1_000_000,
+          }
+          for p, minimum in checks.items():
+              s=Path(p).stat().st_size
+              print(p,s)
+              if s < minimum:
+                  raise SystemExit(f'{p} looks too small: {s}')
+          PY
+
+      - name: Materialize approved AINA references
+        run: |
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > vendor/FaceVerse_v4/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > vendor/FaceVerse_v4/AINA_APPROVED_3Q.jpg
+          python - <<'PY'
+          from PIL import Image
+          for p in ['vendor/FaceVerse_v4/AINA_APPROVED_FRONT.jpg','vendor/FaceVerse_v4/AINA_APPROVED_3Q.jpg']:
+              im=Image.open(p); im.load(); print(p, im.size, im.mode)
+          PY
+
+      - name: Predict front identity
+        working-directory: vendor/FaceVerse_v4
+        run: |
+          python run.py --input AINA_APPROVED_FRONT.jpg --output ../../fv_front --save_results True --save_ply True
+          find ../../fv_front -maxdepth 1 -type f -ls
+
+      - name: Predict three-quarter identity
+        working-directory: vendor/FaceVerse_v4
+        run: |
+          python run.py --input AINA_APPROVED_3Q.jpg --output ../../fv_3q --save_results True --save_ply True
+          find ../../fv_3q -maxdepth 1 -type f -ls
+
+      - name: Export neutral FaceVerse AINA candidates
+        run: |
+          python src/export_faceverse_aina.py
+
+      - name: Upload FaceVerse V4 AINA candidate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aina-faceverse-v4-neutral-candidates
+          path: |
+            output_faceverse_v4/**
+            fv_front/**
+            fv_3q/**
+          if-no-files-found: warn
+          retention-days: 30
