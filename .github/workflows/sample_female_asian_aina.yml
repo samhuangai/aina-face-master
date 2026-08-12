@@ -1,0 +1,46 @@
+name: Sample Female Asian AINA Identities
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - src/sample_female_asian_aina.py
+      - .github/workflows/sample_female_asian_aina.yml
+      - references/AINA_TARGET_3DDFA_SPARSE_68.json
+
+permissions:
+  contents: read
+
+jobs:
+  sample:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy trimesh tensorflow-cpu==2.20.0 etils[epath] h5py
+      - name: Fetch Google GNM
+        run: |
+          git clone --depth 1 https://github.com/google/GNM.git vendor/GNM
+          git -C vendor/GNM lfs install --local || true
+          git -C vendor/GNM lfs pull || true
+          ls -lh vendor/GNM/gnm/shape/data/semantic_sampler/identity_decoder_model.h5
+      - name: Sample and rank identities
+        env:
+          PYTHONPATH: ${{ github.workspace }}/vendor/GNM
+          TF_CPP_MIN_LOG_LEVEL: '2'
+        run: python src/sample_female_asian_aina.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aina-female-asian-top16
+          path: output_semantic_samples/**
+          if-no-files-found: warn
+          retention-days: 30
