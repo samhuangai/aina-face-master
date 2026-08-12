@@ -1,0 +1,67 @@
+name: Run AINA v12.6 Fast Lane
+
+on:
+  push:
+    branches: [run/aina-v126-fast]
+    paths:
+      - .github/workflows/run_v126_fast.yml
+      - src/**
+      - references/**
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy==1.26.4 scipy opencv-python-headless onnxruntime trimesh matplotlib pillow requests tqdm mediapipe==0.10.21
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - name: Materialize approved references
+        run: |
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+      - name: Fetch FaceVerse V4 models
+        run: |
+          git clone --depth 1 https://github.com/Mrkomiljon/faceverse-onnx.git vendor/faceverse-onnx
+          cd vendor/faceverse-onnx
+          python download_models.py --models faceverse_v4_2.npy faceverse_resnet50_float32.onnx
+      - name: Build v12.4
+        run: |
+          python src/fit_aina_faceverse_v124_axisfix.py \
+            --front references/AINA_APPROVED_FRONT.jpg \
+            --three-quarter references/AINA_APPROVED_3Q.jpg \
+            --front-landmarks references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --out output_faceverse_v124
+      - name: Build v12.5
+        run: |
+          python src/sculpt_aina_faceverse_v125_residual.py \
+            --base-full output_faceverse_v124/AINA_FACEVERSE_FULL_v12.4_AXISFIX.obj \
+            --front references/AINA_APPROVED_FRONT.jpg \
+            --faceverse-data vendor/faceverse-onnx/data/faceverse_v4_2.npy \
+            --out output_faceverse_v125
+      - name: Build v12.6
+        run: |
+          python src/sculpt_aina_faceverse_v126_depth.py \
+            --base-full output_faceverse_v125/AINA_FACEVERSE_FULL_v12.5_DENSE_RESIDUAL.obj \
+            --three-quarter references/AINA_APPROVED_3Q.jpg \
+            --side references/AINA_APPROVED_SIDE.jpg \
+            --faceverse-data vendor/faceverse-onnx/data/faceverse_v4_2.npy \
+            --out output_faceverse_v126
+      - name: Upload v12.6
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aina-faceverse-v12.6-fast
+          path: output_faceverse_v126/**
+          if-no-files-found: warn
+          retention-days: 30
