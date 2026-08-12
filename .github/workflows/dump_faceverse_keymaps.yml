@@ -1,0 +1,49 @@
+name: Dump FaceVerse Semantic Keymaps
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/dump_faceverse_keymaps.yml
+
+permissions:
+  contents: read
+
+jobs:
+  dump:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install numpy==1.26.4 requests tqdm
+      - name: Download FaceVerse data only
+        run: |
+          git clone --depth 1 https://github.com/Mrkomiljon/faceverse-onnx.git vendor/faceverse-onnx
+          cd vendor/faceverse-onnx
+          python download_models.py --models faceverse_v4_2.npy
+      - name: Dump mappings
+        run: |
+          mkdir -p keymaps
+          python - <<'PY'
+          import numpy as np, json
+          d=np.load('vendor/faceverse-onnx/data/faceverse_v4_2.npy',allow_pickle=True).item()
+          out={'keys':sorted(d.keys())}
+          for k in sorted(d.keys()):
+              if 'key' in k.lower() or 'mediapipe' in k.lower() or 'landmark' in k.lower():
+                  try:
+                      a=np.asarray(d[k])
+                      out[k]={'shape':list(a.shape),'dtype':str(a.dtype),'values':a.reshape(-1).tolist() if a.size<2000 else a.reshape(-1)[:2000].tolist()}
+                      print(k,a.shape,a.reshape(-1)[:100])
+                  except Exception as e:
+                      out[k]={'error':str(e)}
+          open('keymaps/FACEVERSE_KEYMAPS.json','w').write(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: faceverse-semantic-keymaps
+          path: keymaps/**
+          retention-days: 30
