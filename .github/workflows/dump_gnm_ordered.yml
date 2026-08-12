@@ -1,0 +1,52 @@
+name: Dump AINA v10.1 Ordered GNM
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - src/dump_gnm_ordered_v101.py
+      - .github/workflows/dump_gnm_ordered.yml
+
+permissions:
+  contents: read
+
+jobs:
+  dump:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: Fetch GNM
+        run: |
+          git clone --depth 1 https://github.com/google/GNM.git vendor/GNM
+          git -C vendor/GNM lfs install --local || true
+          git -C vendor/GNM lfs pull || true
+      - name: Materialize references
+        run: |
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+      - name: Rebuild v10.1
+        env:
+          PYTHONPATH: ${{ github.workspace }}/vendor/GNM
+        run: |
+          python src/fit_aina_v101.py --front references/AINA_APPROVED_FRONT.jpg --three-quarter references/AINA_APPROVED_3Q.jpg --side references/AINA_APPROVED_SIDE.jpg --outer-steps 16 --out output_v101
+      - name: Dump original ordering
+        env:
+          PYTHONPATH: ${{ github.workspace }}/vendor/GNM
+        run: python src/dump_gnm_ordered_v101.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aina-v101-ordered-gnm
+          path: output_ordered/**
+          retention-days: 30
