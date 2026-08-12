@@ -24,7 +24,7 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install numpy==1.26.4 scipy opencv-python-headless pyyaml cython scikit-image tqdm
+          pip install numpy==1.26.4 scipy opencv-python-headless pyyaml cython scikit-image tqdm matplotlib
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
       - name: Materialize reference
         run: base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
