@@ -58,24 +58,24 @@ def explicit_almond_field(p,skin_world,eye_world,eye_cp):
     if len(rim)<50:rim=np.argsort(d3)[:130]
     rp=p[rim];x0=float(eye_cp[:,0].mean());cy=float(eye_cp[:,1].mean())
     lo,hi=np.percentile(rp[:,0],[2,98]);current_half=max(.5*(hi-lo),.011);target_half=max(current_half*1.10,.0150)
-    # Determine left/right eye from x in camera plane for tail direction.
+    # Approved art MediaPipe contour is about 2.5:1 width:height. The target
+    # curve therefore preserves a meaningful lower lid instead of collapsing
+    # into the over-thin slit produced by the first v11.5 draft.
     side=-1. if x0<0 else 1.
     handle=np.zeros((len(rim),3),np.float64)
     for k,i in enumerate(rim):
         rel=float(p[i,0]-x0);u=float(np.clip(rel/max(current_half,1e-9),-1,1));outer=np.clip(side*u,0.,1.);inner=np.clip(-side*u,0.,1.)
         uu=float(np.clip(rel/target_half,-1,1));arch=max(0.,1.-uu*uu)
-        # Explicit AINA almond: upper lid drives opening; lower lid stays shallow.
         upper=p[i,1]<=cy
         if upper:
-            ydes=cy-.0049*(arch**.58)-.00095*smoothstep01(outer)+.00012*smoothstep01(inner)
+            ydes=cy-.00680*(arch**.58)-.00085*smoothstep01(outer)+.00012*smoothstep01(inner)
         else:
-            ydes=cy+.00215*(arch**.68)-.00050*smoothstep01(outer)+.00005*smoothstep01(inner)
+            ydes=cy+.00480*(arch**.68)-.00055*smoothstep01(outer)+.00005*smoothstep01(inner)
         xdes=x0+rel*(target_half/current_half)
         handle[k,0]=.88*(xdes-p[i,0]);handle[k,1]=.92*(ydes-p[i,1]);handle[k,2]=-.00010*(arch**.6)
     handle=clampv(handle,.0058)
-    # Propagate from rim in camera XY only; tight support preserves orbit anatomy.
     t=cKDTree(rp[:,:2]);dd,near=t.query(p[:,:2],k=1);w=np.exp(-.5*(dd/.0047)**4);rz=float(np.median(rp[:,2]));w*=np.exp(-.5*((p[:,2]-rz)/.015)**4)
-    return handle[near]*w[:,None],{'rim_vertices':int(len(rim)),'current_half_width_m':current_half,'target_half_width_m':target_half,'max_handle_m':float(np.max(np.linalg.norm(handle,axis=1)))}
+    return handle[near]*w[:,None],{'rim_vertices':int(len(rim)),'current_half_width_m':current_half,'target_half_width_m':target_half,'target_aspect_ratio':2.5,'max_handle_m':float(np.max(np.linalg.norm(handle,axis=1)))}
 
 def area(v,f):
     t=v[f];return .5*np.linalg.norm(np.cross(t[:,1]-t[:,0],t[:,2]-t[:,0]),axis=1)
@@ -90,35 +90,28 @@ def main():
     cpw=controls(fv,idx,bw);ref=core.load_image_rgb(args.front);tpx=np.asarray(json.loads(args.front_landmarks.read_text())['landmarks_xy'],np.float32);tn=core.normalize_target(tpx,ref.shape);R,sc,tr=core.scaled_ortho_init(cpw,tn,fw());pfull=fv@R.T;p=sv@R.T;cp=cpw@R.T
     raw=np.zeros_like(p);mid=float(cp[27:36,0].mean());eye_y=float(cp[36:48,1].mean());mc=cp[48:60,:2].mean(0);chin=cp[8,:2];zface=float(np.median(cp[:,2]));fg=np.exp(-.5*((p[:,2]-zface)/.082)**4)
 
-    # 1. Discover BOTH eye shells per side; shrink as a group and recess them.
     groups=eye_groups(fv,R,ff,cp);eye_stats={};pfull2=pfull.copy()
     for i,ids in enumerate(groups):
         center=pfull[ids].mean(0);q=pfull[ids]-center;q[:,0]*=.925;q[:,1]*=.925;q[:,2]*=.90;pfull2[ids]=center+q;pfull2[ids,2]+=.00125
         ew=fv[ids]
         d,st=explicit_almond_field(p,sv,ew,cp[36:42] if i==0 else cp[42:48]);raw+=d;st['eye_component_vertices']=int(len(ids));eye_stats[str(i)]=st
 
-    # 2. Orbit/brow softness, with less lower-orbit bulge.
     for ex in (float(cp[36:42,0].mean()),float(cp[42:48,0].mean())):
         brow=gauss(p,ex,eye_y-.032,.040,.026,2.2)*fg;under=gauss(p,ex,eye_y+.018,.038,.023,2.2)*fg
         raw[:,2]+=.0033*brow;raw[:,1]-=.00040*brow;raw[:,2]+=.00105*under
     gl=gauss(p,mid,eye_y-.027,.030,.035,2.2)*fg;raw[:,2]+=.0027*gl
 
-    # 3. Stronger delicate nose: narrower alae/bridge, shorter lower nose, less projection.
     nc=cp[27:36,:2].mean(0);nw=max(float(np.linalg.norm(cp[31,:2]-cp[35,:2])),.012);nose=gauss(p,float(nc[0]),float(nc[1]),1.70*nw,.044,2.3)*fg;lower=smoothstep01((p[:,1]-(float(nc[1])-.020))/.052);bridge=gauss(p,float(nc[0]),float(nc[1])-.020,1.05*nw,.038,2.3)*fg
     raw[:,0]+=((float(nc[0])+(p[:,0]-float(nc[0]))*.68)-p[:,0])*nose*lower;raw[:,0]+=((float(nc[0])+(p[:,0]-float(nc[0]))*.82)-p[:,0])*bridge
     raw[:,2]+=.0034*nose;tip=gauss(p,float(cp[33,0]),float(cp[33,1]),.014,.015,2.5)*fg;raw[:,2]+=.0016*tip;raw[:,1]-=.0012*tip
 
-    # 4. Wider soft lips with clear vermilion volume and cupid bow.
     mw=max(float(np.linalg.norm(cp[48,:2]-cp[54,:2])),.025);lip=gauss(p,float(mc[0]),float(mc[1]),.76*mw,.020,2.4)*fg
     raw[:,0]+=((float(mc[0])+(p[:,0]-float(mc[0]))*1.105)-p[:,0])*lip
     up=gauss(p,float(mc[0]),float(mc[1])-.004,.61*mw,.0105,2.5)*fg;lo=gauss(p,float(mc[0]),float(mc[1])+.005,.64*mw,.012,2.5)*fg;cupid=gauss(p,float(mc[0]),float(mc[1])-.006,.010,.0062,2.5)*fg
     raw[:,2]-=.00125*up+.00195*lo;raw[:,1]-=.00070*cupid;raw[:,1]+=.00025*lo
 
-    # 5. Shorter/narrower chin and softer lower third.
     ch=gauss(p,float(chin[0]),float(chin[1]),.043,.036,2.3)*fg;raw[:,0]+=((float(chin[0])+(p[:,0]-float(chin[0]))*.90)-p[:,0])*ch;raw[:,1]-=.00155*ch;raw[:,2]+=.00045*ch
 
-    # 6. Reduce oversized bare cranium, especially upper width/height. This is
-    # outside face controls and fixes the adult/bald-mannequin proportion seen in QA.
     upper=smoothstep01((eye_y-.038-p[:,1])/.090);side=smoothstep01((np.abs(p[:,0]-mid)-.020)/.060);skull=upper*(.45+.55*side)
     raw[:,0]+=((mid+(p[:,0]-mid)*.925)-p[:,0])*skull;raw[:,1]+=.0048*upper
 
