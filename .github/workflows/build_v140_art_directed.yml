@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
-    paths: [src/sculpt_aina_v140_art_directed.py, src/render_aina_v140_qa.py, .github/workflows/build_v140_art_directed.yml]
+    paths: [src/sculpt_aina_v140_art_directed.py, src/render_aina_v140_qa.py, src/blender/**, .github/workflows/build_v140_art_directed.yml]
 permissions: {contents: read}
 jobs:
   build:
@@ -35,3 +35,18 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: aina-face-master-v14.0-art-directed, path: 'output_v140/**', if-no-files-found: warn, retention-days: 30}
+  character-base:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Blender and MPFB
+        run: |
+          curl -L --fail -o blender.tar.xz 'https://cdn.builder.blender.org/download/daily/blender-4.5.12-stable+v45.84afd5f785f7-linux.x86_64-release.tar.xz'
+          mkdir blender && tar -xf blender.tar.xz -C blender --strip-components=1
+          git clone --depth 1 https://github.com/makehumancommunity/mpfb2.git vendor/mpfb2
+      - name: Build body rig base
+        run: ./blender/blender -b --python-expr "exec(open('src/blender/aina_body_base.py').read()); exec(open('src/blender/aina_body_rig_export.py').read())"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: aina-character-base-v1, path: 'output_character_base/**', if-no-files-found: warn, retention-days: 30}
