@@ -21,7 +21,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libegl1 libgl1-mesa-dri libosmesa6
-          pip install numpy==1.26.4 scipy opencv-python-headless onnxruntime trimesh pillow mediapipe==0.10.21 vtk
+          pip install numpy==1.26.4 scipy opencv-python-headless onnxruntime trimesh pillow mediapipe==0.10.21 vtk requests tqdm
       - name: Materialize references
         run: |
           base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
