@@ -1,0 +1,93 @@
+name: Build AINA v15.1 Real Mesh Identity
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - src/sculpt_aina_v151_identity.py
+      - src/render_aina_v151_qa.py
+      - .github/workflows/build_v151_identity.yml
+      - src/sculpt_aina_v140_art_directed.py
+      - references/AINA_APPROVED_FRONT_V2.jpg.b64
+      - references/AINA_APPROVED_3Q.jpg.b64
+      - references/AINA_APPROVED_SIDE.jpg.b64
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      PYOPENGL_PLATFORM: osmesa
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install headless geometry runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1-mesa-dri libosmesa6
+          python -m pip install --upgrade pip
+          pip install numpy==1.26.4 scipy opencv-python-headless onnxruntime trimesh pillow mediapipe==0.10.21 vtk requests tqdm
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Materialize approved AINA references
+        run: |
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+
+      - name: Fetch FaceVerse models
+        run: |
+          git clone --depth 1 https://github.com/Mrkomiljon/faceverse-onnx.git vendor/faceverse-onnx
+          cd vendor/faceverse-onnx
+          python download_models.py --models faceverse_v4_2.npy faceverse_resnet50_float32.onnx
+
+      - name: Rebuild verified smooth v12.5 source
+        run: |
+          python src/fit_aina_faceverse_v124_axisfix.py \
+            --front references/AINA_APPROVED_FRONT.jpg \
+            --three-quarter references/AINA_APPROVED_3Q.jpg \
+            --front-landmarks references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --out output_faceverse_v124
+          python src/sculpt_aina_faceverse_v125_residual.py \
+            --base-full output_faceverse_v124/AINA_FACEVERSE_FULL_v12.4_AXISFIX.obj \
+            --front references/AINA_APPROVED_FRONT.jpg \
+            --faceverse-data vendor/faceverse-onnx/data/faceverse_v4_2.npy \
+            --out output_faceverse_v125
+
+      - name: Rebuild v14 actual mesh base
+        run: |
+          python src/sculpt_aina_v140_art_directed.py \
+            --base-full output_faceverse_v125/AINA_FACEVERSE_FULL_v12.5_DENSE_RESIDUAL.obj \
+            --out output_v140
+
+      - name: Sculpt v15.1 actual identity mesh
+        run: |
+          python src/sculpt_aina_v151_identity.py \
+            --base-full output_v140/AINA_FACEVERSE_FULL_v14.0_ART_DIRECTED.obj \
+            --out output_v151
+
+      - name: Render real v15.1 identity gate
+        run: |
+          python src/render_aina_v151_qa.py \
+            --clay output_v151/AINA_FACEVERSE_IDENTITY_CLAY_v15.1.obj \
+            --front references/AINA_APPROVED_FRONT.jpg \
+            --q3 references/AINA_APPROVED_3Q.jpg \
+            --side references/AINA_APPROVED_SIDE.jpg \
+            --out output_v151/QA
+
+      - name: Upload actual v15.1 mesh and QA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aina-face-master-v15.1-real-mesh-identity
+          path: output_v151/**
+          if-no-files-found: warn
+          retention-days: 30
