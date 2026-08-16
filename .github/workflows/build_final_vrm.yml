@@ -8,6 +8,7 @@ on:
       - src/blender/aina_final_vrm_reimport_qa.py
       - src/sculpt_aina_v155_identity.py
       - src/finalize_aina_v155_lock.py
+      - src/converge_aina_v155_release_gate.py
       - src/render_aina_v155_qa.py
       - references/AINA_APPROVED_FRONT_V2.jpg.b64
       - references/AINA_APPROVED_3Q.jpg.b64
@@ -32,7 +33,6 @@ jobs:
       PYOPENGL_PLATFORM: osmesa
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -60,7 +60,7 @@ jobs:
           cd vendor/faceverse-onnx
           python download_models.py --models faceverse_v4_2.npy faceverse_resnet50_float32.onnx
 
-      - name: Rebuild clean v15.5 and hard-lock the same identity
+      - name: Rebuild and strictly converge the same v15.5 identity
         run: |
           python src/fit_aina_faceverse_v124_axisfix.py \
             --front references/AINA_APPROVED_FRONT.jpg \
@@ -78,6 +78,13 @@ jobs:
           python src/finalize_aina_v155_lock.py \
             --base output_v155/AINA_FACEVERSE_FULL_v15.5_CLEAN_IDENTITY.obj \
             --target-landmarks references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --out output_locked \
+            || test -s output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+          cp output_locked/AINA_FACEVERSE_v15.5_REPORT.json output_locked/AINA_FACEVERSE_v15.5_PRECONVERGENCE_REPORT.json
+          python src/converge_aina_v155_release_gate.py \
+            --mesh output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
+            --target-landmarks references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --prior-report output_locked/AINA_FACEVERSE_v15.5_PRECONVERGENCE_REPORT.json \
             --out output_locked
           python src/render_aina_v155_qa.py \
             --clay output_locked/AINA_FACEVERSE_IDENTITY_CLAY_v15.5_LOCKED.obj \
@@ -89,7 +96,7 @@ jobs:
           import json
           d=json.load(open('output_locked/AINA_FACEVERSE_v15.5_REPORT.json'))
           if d.get('identity_lock') is not True or not all(d.get('checks',{}).values()):
-              raise SystemExit('Final VRM blocked: v15.5 identity lock gate is not true')
+              raise SystemExit('Final VRM blocked: strict v15.5 identity lock gate is not true')
           print('AINA_V15_5_IDENTITY_LOCK=TRUE')
           PY
 
@@ -100,11 +107,7 @@ jobs:
           found=''
           for v in 4.5.12 4.5.11 4.5.10 4.5.9 4.5.8 4.5.7 4.5.6 4.5.5 4.5.4 4.5.3 4.5.2 4.5.1 4.5.0; do
             url="https://download.blender.org/release/Blender4.5/blender-${v}-linux-x64.tar.xz"
-            echo "Trying ${url}"
-            if curl -fL --retry 2 --connect-timeout 20 -o .runtime/blender.tar.xz "${url}"; then
-              found="${v}"
-              break
-            fi
+            if curl -fL --retry 2 --connect-timeout 20 -o .runtime/blender.tar.xz "${url}"; then found="${v}"; break; fi
           done
           test -n "${found}"
           tar -xf .runtime/blender.tar.xz -C .runtime/blender --strip-components=1
@@ -137,25 +140,11 @@ jobs:
           python - <<'PY'
           import json, pathlib, os
           root=pathlib.Path('output_final')
-          required=[
-            root/'AINA_MASTER.blend', root/'AINA.vrm', root/'AINA_REIMPORT_CHECK.blend',
-            root/'Preview'/'AINA_PORTRAIT_FRONT.png', root/'Preview'/'AINA_PORTRAIT_3Q.png', root/'Preview'/'AINA_FULL_BODY_FRONT.png',
-            root/'QA'/'AINA_FINAL_ASSEMBLY_QA.json', root/'QA'/'AINA_VRM_REIMPORT_QA.json'
-          ]
+          required=[root/'AINA_MASTER.blend',root/'AINA.vrm',root/'AINA_REIMPORT_CHECK.blend',root/'Preview'/'AINA_PORTRAIT_FRONT.png',root/'Preview'/'AINA_PORTRAIT_3Q.png',root/'Preview'/'AINA_FULL_BODY_FRONT.png',root/'QA'/'AINA_FINAL_ASSEMBLY_QA.json',root/'QA'/'AINA_VRM_REIMPORT_QA.json']
           missing=[str(p) for p in required if not p.exists() or p.stat().st_size==0]
           if missing: raise SystemExit('Missing final production files: '+repr(missing))
-          a=json.loads((root/'QA'/'AINA_FINAL_ASSEMBLY_QA.json').read_text())
-          r=json.loads((root/'QA'/'AINA_VRM_REIMPORT_QA.json').read_text())
-          ident=json.loads(pathlib.Path('output_locked/AINA_FACEVERSE_v15.5_REPORT.json').read_text())
-          checks={
-            'identity_lock': ident.get('identity_lock') is True,
-            'assembly_pass': a.get('assembly_pass') is True,
-            'shape_controls_52': a.get('shape_control_count')==52,
-            'vrm_presets_18': a.get('vrm_preset_count')==18,
-            'spring_bones': a.get('spring_bone_count',0)>=3,
-            'reimport_pass': r.get('pass') is True,
-            'vrm_size': (root/'AINA.vrm').stat().st_size>=100000,
-          }
+          a=json.loads((root/'QA'/'AINA_FINAL_ASSEMBLY_QA.json').read_text());r=json.loads((root/'QA'/'AINA_VRM_REIMPORT_QA.json').read_text());ident=json.loads(pathlib.Path('output_locked/AINA_FACEVERSE_v15.5_REPORT.json').read_text())
+          checks={'identity_lock':ident.get('identity_lock') is True,'assembly_pass':a.get('assembly_pass') is True,'shape_controls_52':a.get('shape_control_count')==52,'vrm_presets_18':a.get('vrm_preset_count')==18,'spring_bones':a.get('spring_bone_count',0)>=3,'reimport_pass':r.get('pass') is True,'vrm_size':(root/'AINA.vrm').stat().st_size>=100000}
           print(json.dumps(checks,indent=2))
           if not all(checks.values()): raise SystemExit('AINA final production gate failed')
           (root/'QA'/'AINA_FINAL_RELEASE_GATE.json').write_text(json.dumps({'pass':True,'checks':checks,'blender':os.environ.get('BLENDER_PATCH','unknown')},indent=2))
@@ -168,12 +157,7 @@ jobs:
           echo '## AINA Final VRM Production' >> "$GITHUB_STEP_SUMMARY"
           echo "Blender 4.5 LTS patch: ${BLENDER_PATCH:-unknown}" >> "$GITHUB_STEP_SUMMARY"
           for f in output_locked/AINA_FACEVERSE_v15.5_REPORT.json output_final/QA/AINA_FINAL_ASSEMBLY_QA.json output_final/QA/AINA_VRM_REIMPORT_QA.json output_final/QA/AINA_FINAL_RELEASE_GATE.json; do
-            if [ -f "$f" ]; then
-              echo "### $f" >> "$GITHUB_STEP_SUMMARY"
-              echo '```json' >> "$GITHUB_STEP_SUMMARY"
-              cat "$f" >> "$GITHUB_STEP_SUMMARY"
-              echo '```' >> "$GITHUB_STEP_SUMMARY"
-            fi
+            if [ -f "$f" ]; then echo "### $f" >> "$GITHUB_STEP_SUMMARY"; echo '```json' >> "$GITHUB_STEP_SUMMARY"; cat "$f" >> "$GITHUB_STEP_SUMMARY"; echo '```' >> "$GITHUB_STEP_SUMMARY"; fi
           done
 
       - name: Upload final production package
