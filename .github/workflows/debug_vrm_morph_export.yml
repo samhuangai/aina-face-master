@@ -1,0 +1,50 @@
+name: Debug AINA VRM Morph Export
+on:
+  push:
+    branches: [release/aina-final-vrm]
+    paths:
+      - src/blender/aina_morph_export_debug.py
+      - .github/workflows/debug_vrm_morph_export.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  debug:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: aina-final-vrm-production
+          path: seed
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 31960168094
+      - name: Install Blender and VRM Addon
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y --no-install-recommends curl xz-utils git libegl1 libgl1 libgl1-mesa-dri libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6 >/dev/null
+          mkdir -p .runtime/blender
+          curl -fL -o .runtime/blender.tar.xz https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz
+          tar -xf .runtime/blender.tar.xz -C .runtime/blender --strip-components=1
+          git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
+      - name: Export without previews and inspect raw morphs
+        run: |
+          .runtime/blender/blender --background --factory-startup --python-exit-code 1 --python src/blender/aina_morph_export_debug.py -- --face seed/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj --identity-report seed/output_locked/AINA_FACEVERSE_v15.5_REPORT.json --out output_debug
+      - name: Show raw morph report
+        if: always()
+        run: |
+          cat output_debug/QA/AINA_RAW_VRM_MORPH_DEBUG.json || true
+      - name: Upload debug output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aina-vrm-morph-debug
+          path: |
+            output_debug/AINA.vrm
+            output_debug/AINA_MASTER.blend
+            output_debug/QA/**
+          if-no-files-found: warn
+          retention-days: 3
