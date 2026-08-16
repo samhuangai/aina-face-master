@@ -1,0 +1,99 @@
+name: Assemble AINA Final VRM From Locked Face
+
+on:
+  push:
+    branches: [release/aina-final-vrm]
+    paths:
+      - src/blender/aina_final_vrm_release_addonfix.py
+      - src/blender/aina_final_vrm_reimport_release.py
+      - .github/workflows/build_final_vrm_assembly_only.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  final:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download already locked v15.5 face from verified production run
+        uses: actions/download-artifact@v4
+        with:
+          name: aina-final-vrm-production
+          path: seed
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 31960168094
+
+      - name: Validate locked seed
+        run: |
+          test -s seed/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+          test -s seed/output_locked/AINA_FACEVERSE_v15.5_REPORT.json
+          python - <<'PY'
+          import json
+          d=json.load(open('seed/output_locked/AINA_FACEVERSE_v15.5_REPORT.json'))
+          assert d.get('identity_lock') is True and all(d.get('checks',{}).values()), d
+          print('LOCKED_SEED_OK',d.get('front_landmark_rmse_px'),d.get('front_landmark_max_px'))
+          PY
+
+      - name: Install Blender 4.5 LTS and VRM Addon
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl xz-utils ca-certificates git libegl1 libgl1 libgl1-mesa-dri libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          mkdir -p .runtime/blender
+          found=''
+          for v in 4.5.12 4.5.11 4.5.10 4.5.9 4.5.8 4.5.7 4.5.6 4.5.5 4.5.4 4.5.3 4.5.2 4.5.1 4.5.0; do
+            url="https://download.blender.org/release/Blender4.5/blender-${v}-linux-x64.tar.xz"
+            if curl -fL --retry 2 --connect-timeout 20 -o .runtime/blender.tar.xz "$url"; then found="$v"; break; fi
+          done
+          test -n "$found"
+          tar -xf .runtime/blender.tar.xz -C .runtime/blender --strip-components=1
+          echo "BLENDER=$PWD/.runtime/blender/blender" >> "$GITHUB_ENV"
+          echo "BLENDER_PATCH=$found" >> "$GITHUB_ENV"
+          git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
+          .runtime/blender/blender --version
+
+      - name: Assemble AINA MASTER and export VRM 1.0
+        run: |
+          "$BLENDER" --background --factory-startup --python-exit-code 1 --python src/blender/aina_final_vrm_release_addonfix.py -- --face seed/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj --identity-report seed/output_locked/AINA_FACEVERSE_v15.5_REPORT.json --out output_final
+
+      - name: Reimport final VRM into clean Blender
+        run: |
+          "$BLENDER" --background --factory-startup --python-exit-code 1 --python src/blender/aina_final_vrm_reimport_release.py -- --vrm output_final/AINA.vrm --out output_final
+
+      - name: Hard final gate
+        run: |
+          python - <<'PY'
+          import json,pathlib,os
+          root=pathlib.Path('output_final');ident=json.load(open('seed/output_locked/AINA_FACEVERSE_v15.5_REPORT.json'))
+          req=[root/'AINA_MASTER.blend',root/'AINA.vrm',root/'AINA_REIMPORT_CHECK.blend',root/'Preview'/'AINA_PORTRAIT_FRONT.png',root/'Preview'/'AINA_PORTRAIT_3Q.png',root/'Preview'/'AINA_FULL_BODY_FRONT.png',root/'QA'/'AINA_FINAL_ASSEMBLY_QA.json',root/'QA'/'AINA_VRM_REIMPORT_QA.json']
+          missing=[str(p) for p in req if not p.exists() or p.stat().st_size==0]
+          if missing: raise SystemExit('Missing: '+repr(missing))
+          a=json.load(open(root/'QA'/'AINA_FINAL_ASSEMBLY_QA.json'));r=json.load(open(root/'QA'/'AINA_VRM_REIMPORT_QA.json'))
+          checks={'identity_lock':ident.get('identity_lock') is True,'assembly_pass':a.get('assembly_pass') is True,'shape_controls_52':a.get('shape_control_count')==52,'vrm_presets_18':a.get('vrm_preset_count')==18,'spring_bones':a.get('spring_bone_count',0)>=3,'reimport_pass':r.get('pass') is True,'vrm_size':(root/'AINA.vrm').stat().st_size>=100000}
+          if not all(checks.values()):raise SystemExit(repr(checks))
+          gate={'pass':True,'checks':checks,'blender':os.environ.get('BLENDER_PATCH'),'identity_rmse_px':ident.get('front_landmark_rmse_px'),'identity_max_px':ident.get('front_landmark_max_px')}
+          (root/'QA'/'AINA_FINAL_RELEASE_GATE.json').write_text(json.dumps(gate,indent=2));print(json.dumps(gate,indent=2))
+          PY
+
+      - name: Package final deliverable
+        run: |
+          mkdir release_package
+          cp output_final/AINA_MASTER.blend output_final/AINA.vrm output_final/AINA_REIMPORT_CHECK.blend release_package/
+          cp -r output_final/Textures output_final/Preview output_final/QA release_package/
+          cp seed/output_locked/AINA_FACEVERSE_v15.5_REPORT.json release_package/QA/AINA_FACE_IDENTITY_LOCK.json
+          cp seed/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.glb release_package/
+          cp seed/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj release_package/
+          (cd release_package && sha256sum AINA_MASTER.blend AINA.vrm AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.glb AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj > SHA256SUMS.txt)
+
+      - name: Upload final production release
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-FINAL-PRODUCTION-RELEASE
+          path: release_package/**
+          if-no-files-found: error
+          retention-days: 30
