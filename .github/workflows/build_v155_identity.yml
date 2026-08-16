@@ -1,4 +1,4 @@
-name: Build AINA v15.5 Clean Real Mesh Identity
+name: Build AINA v15.5 Final Identity Lock
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: aina-v15-clean-${{ github.ref }}
+  group: aina-v15-lock-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -62,13 +62,13 @@ jobs:
             --faceverse-data vendor/faceverse-onnx/data/faceverse_v4_2.npy \
             --out output_faceverse_v125
 
-      - name: Sculpt v15.5 clean actual identity mesh
+      - name: Sculpt and lock v15.5 identity mesh
         run: |
           python src/sculpt_aina_v155_identity.py \
             --base output_faceverse_v125/AINA_FACEVERSE_FULL_v12.5_DENSE_RESIDUAL.obj \
             --out output_v155
 
-      - name: Render calibrated real v15.5 identity gate
+      - name: Render calibrated v15.5 identity QA
         run: |
           python src/render_aina_v155_qa.py \
             --clay output_v155/AINA_FACEVERSE_IDENTITY_CLAY_v15.5.obj \
@@ -77,11 +77,35 @@ jobs:
             --side references/AINA_APPROVED_SIDE.jpg \
             --out output_v155/QA
 
-      - name: Upload actual v15.5 clean mesh and calibrated QA
+      - name: Enforce identity lock gate
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          p=pathlib.Path('output_v155/AINA_FACEVERSE_v15.5_REPORT.json')
+          d=json.loads(p.read_text())
+          print(json.dumps(d, indent=2))
+          if d.get('identity_lock') is not True:
+              raise SystemExit('identity_lock is not true; VRM assembly is blocked')
+          if not all(d.get('checks',{}).values()):
+              raise SystemExit('one or more identity geometry checks failed')
+          print('AINA_V15_5_IDENTITY_LOCK=TRUE')
+          PY
+
+      - name: Identity lock summary
+        if: always()
+        run: |
+          echo '## AINA v15.5 Final Identity Lock' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f output_v155/AINA_FACEVERSE_v15.5_REPORT.json ]; then
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat output_v155/AINA_FACEVERSE_v15.5_REPORT.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload locked v15.5 mesh and calibrated QA
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aina-face-master-v15.5-clean-real-mesh-identity
+          name: aina-face-master-v15.5-final-identity-lock
           path: output_v155/**
           if-no-files-found: warn
           retention-days: 30
