@@ -5,10 +5,10 @@ Why this exists:
 - Blender 4.5 native glTF export preserves all 52 AINA shape keys.
 - VRM Addon v4.5.0's staging export in this exact scene drops all morph targets.
 
-The native GLB is therefore the geometry/skin/morph carrier.  Only VRM semantic
-JSON extensions are transplanted from the semantic VRM, with every node index
-remapped by stable node/bone name.  No binary accessor/bufferView surgery is
-needed because the carrier already owns the final geometry and all morph data.
+The native GLB is therefore the geometry/skin/morph carrier. Only VRM semantic
+JSON extensions are transplanted from the semantic VRM. Referenced nodes are
+remapped by stable name plus structural role (mesh node vs bone/hierarchy node),
+which safely disambiguates the intentionally same-named AINA eye mesh/bone pair.
 """
 from __future__ import annotations
 import argparse, copy, json, struct
@@ -60,19 +60,35 @@ def write_glb(path:Path,j:dict,bin_chunks:list[bytes]):
         bb=bb+b'\x00'*((-len(bb))%4);chunks.append(struct.pack('<II',len(bb),0x004E4942)+bb)
     total=12+sum(map(len,chunks));path.write_bytes(struct.pack('<4sII',b'glTF',2,total)+b''.join(chunks))
 
-def unique_name_index(nodes:list[dict],name:str)->int:
-    hits=[i for i,n in enumerate(nodes) if n.get('name')==name]
-    if len(hits)!=1:raise RuntimeError(f'Expected exactly one node named {name!r}, got {hits}')
-    return hits[0]
+def resolve_node_index(sem_node:dict,carrier_nodes:list[dict])->int:
+    name=sem_node.get('name')
+    if not name:raise RuntimeError('Referenced semantic node has no stable name')
+    hits=[i for i,n in enumerate(carrier_nodes) if n.get('name')==name]
+    if len(hits)==1:return hits[0]
+    if not hits:raise RuntimeError(f'Carrier has no node named {name!r}')
+    # First distinguish object/mesh nodes from armature-bone/hierarchy nodes.
+    want_mesh='mesh' in sem_node;want_skin='skin' in sem_node
+    narrowed=[i for i in hits if ('mesh' in carrier_nodes[i])==want_mesh and ('skin' in carrier_nodes[i])==want_skin]
+    if len(narrowed)==1:return narrowed[0]
+    if narrowed:hits=narrowed
+    # Same-name eye object vs eye bone also differs by child hierarchy.
+    want_children=bool(sem_node.get('children'))
+    narrowed=[i for i in hits if bool(carrier_nodes[i].get('children'))==want_children]
+    if len(narrowed)==1:return narrowed[0]
+    if narrowed:hits=narrowed
+    # Final deterministic structural signature. We intentionally do not choose
+    # arbitrarily: a wrong eye node would make the avatar formally invalid.
+    sig=lambda n:(('mesh' in n),('skin' in n),bool(n.get('children')),('camera' in n))
+    ss=sig(sem_node);narrowed=[i for i in hits if sig(carrier_nodes[i])==ss]
+    if len(narrowed)==1:return narrowed[0]
+    raise RuntimeError(f'Ambiguous carrier nodes for {name!r}: {hits}; semantic signature={ss}')
 
 def build_node_remap(sem_nodes:list[dict],carrier_nodes:list[dict]):
     cache={}
     def remap(idx:int)->int:
         if idx in cache:return cache[idx]
         if not (0<=idx<len(sem_nodes)):raise RuntimeError(f'Semantic node index out of range: {idx}')
-        name=sem_nodes[idx].get('name')
-        if not name:raise RuntimeError(f'Semantic referenced node {idx} has no stable name')
-        out=unique_name_index(carrier_nodes,name);cache[idx]=out;return out
+        out=resolve_node_index(sem_nodes[idx],carrier_nodes);cache[idx]=out;return out
     return remap,cache
 
 def remap_node_fields(value:Any,remap):
@@ -111,53 +127,37 @@ def merge(semantic_path:Path,carrier_path:Path,out_path:Path,report_path:Path|No
     if 'VRMC_vrm' not in sem_ext or 'VRMC_springBone' not in sem_ext:raise RuntimeError('Semantic VRM is missing VRMC_vrm or VRMC_springBone')
     sem_nodes=sem.get('nodes',[]);nodes=carrier.get('nodes',[]);remap,cache=build_node_remap(sem_nodes,nodes)
     face_node,face_mesh,target_names,primitive_counts=carrier_face(carrier);target_index={n:i for i,n in enumerate(target_names)}
-
     vrm=remap_node_fields(sem_ext['VRMC_vrm'],remap)
     preset=vrm.setdefault('expressions',{}).setdefault('preset',{})
     missing_presets=[p for p in PRESET_BINDS if p not in preset]
     if missing_presets:raise RuntimeError(f'Semantic VRM missing presets: {missing_presets}')
     total_binds=0
     for pname,bindings in PRESET_BINDS.items():
-        expr=preset[pname]
-        binds=[]
+        expr=preset[pname];binds=[]
         for target,weight in bindings:
             if target not in target_index:raise RuntimeError(f'Morph target {target} absent from carrier')
             binds.append({'node':face_node,'index':target_index[target],'weight':float(weight)})
         if binds:expr['morphTargetBinds']=binds
         else:expr.pop('morphTargetBinds',None)
         total_binds+=len(binds)
-
     spring=remap_node_fields(sem_ext['VRMC_springBone'],remap)
-    carrier.setdefault('extensions',{})['VRMC_vrm']=vrm
-    carrier['extensions']['VRMC_springBone']=spring
+    carrier.setdefault('extensions',{})['VRMC_vrm']=vrm;carrier['extensions']['VRMC_springBone']=spring
     used=list(carrier.get('extensionsUsed',[]))
     for e in ('VRMC_vrm','VRMC_springBone'):
         if e not in used:used.append(e)
-    # Do not claim semantic-only material extensions that were not transplanted.
     carrier['extensionsUsed']=used
     if 'extensionsRequired' in carrier and not carrier['extensionsRequired']:carrier.pop('extensionsRequired',None)
     validate_node_refs(vrm,len(nodes),'VRMC_vrm');validate_node_refs(spring,len(nodes),'VRMC_springBone')
-
     human=vrm.get('humanoid',{}).get('humanBones',{});required=('hips','spine','chest','neck','head','leftUpperArm','rightUpperArm','leftLowerArm','rightLowerArm','leftHand','rightHand','leftUpperLeg','rightUpperLeg','leftLowerLeg','rightLowerLeg','leftFoot','rightFoot','leftEye','rightEye')
     missing_h=[x for x in required if not isinstance(human.get(x,{}).get('node'),int)]
     if missing_h:raise RuntimeError(f'Merged humanoid mappings missing: {missing_h}')
     springs=spring.get('springs',[]);spring_joints=sum(len(x.get('joints',[])) for x in springs)
-    checks={
-        'carrier_52_target_names':len(target_names)==52,
-        'carrier_52_targets_each_primitive':all(x==52 for x in primitive_counts),
-        'expression_binds_ge_20':total_binds>=20,
-        'humanoid_required_mapped':not missing_h,
-        'spring_chains_ge_3':len(springs)>=3,
-        'spring_joints_ge_6':spring_joints>=6,
-        'vrm_spec_1_0':vrm.get('specVersion')=='1.0',
-    }
+    checks={'carrier_52_target_names':len(target_names)==52,'carrier_52_targets_each_primitive':all(x==52 for x in primitive_counts),'expression_binds_ge_20':total_binds>=20,'humanoid_required_mapped':not missing_h,'spring_chains_ge_3':len(springs)>=3,'spring_joints_ge_6':spring_joints>=6,'vrm_spec_1_0':vrm.get('specVersion')=='1.0'}
     if not all(checks.values()):raise RuntimeError(f'Merged VRM pre-pack checks failed: {checks}')
     write_glb(out_path,carrier,bins)
-    # Round-trip the container bytes before handing to Blender importer.
     verify,_=read_glb(out_path);vface=carrier_face(verify);vpreset=verify['extensions']['VRMC_vrm']['expressions']['preset'];verified_binds=sum(len(x.get('morphTargetBinds',[])) for x in vpreset.values())
     report={'product':'AINA VRM Morph Carrier Merge','pass':True,'semantic_source':str(semantic_path),'carrier_source':str(carrier_path),'output':str(out_path),'output_bytes':out_path.stat().st_size,'face_node':face_node,'face_mesh':face_mesh,'target_names_count':len(vface[2]),'primitive_target_counts':vface[3],'preset_morph_bind_total':verified_binds,'spring_count':len(springs),'spring_joint_count':spring_joints,'node_remap_count':len(cache),'checks':checks}
-    if report_path:
-        report_path.parent.mkdir(parents=True,exist_ok=True);report_path.write_text(json.dumps(report,indent=2),encoding='utf-8')
+    if report_path:report_path.parent.mkdir(parents=True,exist_ok=True);report_path.write_text(json.dumps(report,indent=2),encoding='utf-8')
     print(json.dumps(report,indent=2));return report
 
 def main():
