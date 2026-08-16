@@ -4,7 +4,8 @@ on:
   push:
     branches: [release/aina-final-vrm]
     paths:
-      - src/blender/aina_morph_export_debug.py
+      - src/merge_aina_vrm_carrier.py
+      - src/blender/aina_final_vrm_morph_carrier_release.py
       - src/blender/aina_final_vrm_release_addonfix.py
       - src/blender/aina_final_vrm_reimport_release.py
       - .github/workflows/build_final_vrm_assembly_only.yml
@@ -27,6 +28,14 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
           run-id: 31960168094
+      - name: Validate locked v15.5 seed
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('seed/output_locked/AINA_FACEVERSE_v15.5_REPORT.json'))
+          assert d.get('identity_lock') is True and all(d.get('checks',{}).values()),d
+          print('IDENTITY_LOCK_OK',d['front_landmark_rmse_px'],d['front_landmark_max_px'])
+          PY
       - name: Install Blender 4.5.12 and VRM Addon
         run: |
           sudo apt-get update >/dev/null
@@ -35,18 +44,36 @@ jobs:
           curl -fL -o .runtime/blender.tar.xz https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz
           tar -xf .runtime/blender.tar.xz -C .runtime/blender --strip-components=1
           git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
-      - name: Export real VRM without previews and inspect raw morph targets
+      - name: Assemble merged VRM without preview render
+        env:
+          AINA_FAST_NO_PREVIEW: '1'
         run: |
-          .runtime/blender/blender --background --factory-startup --python-exit-code 1 --python src/blender/aina_morph_export_debug.py -- --face seed/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj --identity-report seed/output_locked/AINA_FACEVERSE_v15.5_REPORT.json --out output_debug
-          cat output_debug/QA/AINA_RAW_VRM_MORPH_DEBUG.json
-      - name: Upload raw diagnostics
+          .runtime/blender/blender --background --factory-startup --python-exit-code 1 --python src/blender/aina_final_vrm_morph_carrier_release.py -- --face seed/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj --identity-report seed/output_locked/AINA_FACEVERSE_v15.5_REPORT.json --out output_fast
+          cat output_fast/QA/AINA_VRM_MORPH_CARRIER_MERGE.json
+      - name: Clean-scene reimport hard QA
+        run: |
+          .runtime/blender/blender --background --factory-startup --python-exit-code 1 --python src/blender/aina_final_vrm_reimport_release.py -- --vrm output_fast/AINA.vrm --out output_fast
+          cat output_fast/QA/AINA_VRM_REIMPORT_QA.json
+      - name: Assert semantic and morph gate
+        run: |
+          python - <<'PY'
+          import json
+          q=json.load(open('output_fast/QA/AINA_VRM_REIMPORT_QA.json'))
+          m=json.load(open('output_fast/QA/AINA_VRM_MORPH_CARRIER_MERGE.json'))
+          assert q['pass'] is True,q
+          assert q['checks']['shape_controls_52'] is True,q
+          assert q['checks']['preset_bindings'] is True,q
+          assert m['target_names_count']==52 and m['preset_morph_bind_total']>=20,m
+          print('AINA_MERGED_VRM_FAST_GATE=PASS')
+          PY
+      - name: Upload verified fast gate
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: AINA-VRM-MORPH-DIAGNOSTIC
+          name: AINA-MERGED-VRM-FAST-GATE
           path: |
-            output_debug/AINA.vrm
-            output_debug/AINA_MASTER.blend
-            output_debug/QA/**
+            output_fast/AINA.vrm
+            output_fast/AINA_REIMPORT_CHECK.blend
+            output_fast/QA/**
           if-no-files-found: warn
           retention-days: 3
