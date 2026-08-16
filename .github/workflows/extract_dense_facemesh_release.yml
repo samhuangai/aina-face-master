@@ -1,0 +1,55 @@
+name: Extract AINA Dense FaceMesh Targets
+
+on:
+  push:
+    branches: [release/aina-final-vrm]
+    paths:
+      - src/extract_aina_dense_facemesh.py
+      - src/reconstruct_aina_mediapipe468.py
+      - .github/workflows/extract_dense_facemesh_release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dense:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dense face dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy==1.26.4 mediapipe==0.10.21 opencv-python-headless trimesh matplotlib pillow
+      - name: Materialize approved references
+        run: |
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+      - name: Extract refined 478 point references
+        run: |
+          python src/extract_aina_dense_facemesh.py \
+            --front references/AINA_APPROVED_FRONT.jpg \
+            --q3 references/AINA_APPROVED_3Q.jpg \
+            --side references/AINA_APPROVED_SIDE.jpg \
+            --out output_dense
+          cat output_dense/AINA_DENSE_FACEMESH_REPORT.json
+      - name: Build canonical 468 target surface
+        run: |
+          mkdir -p vendor
+          curl -L --fail --retry 3 https://raw.githubusercontent.com/google-ai-edge/mediapipe/master/mediapipe/modules/face_geometry/data/canonical_face_model.obj -o vendor/canonical_face_model.obj
+          python src/reconstruct_aina_mediapipe468.py
+          cat output_mediapipe468/AINA_MP468_v11.1_REPORT.json
+      - name: Upload dense targets and QA
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-DENSE-FACEMESH-TARGETS
+          path: |
+            output_dense/**
+            output_mediapipe468/**
+          if-no-files-found: error
+          retention-days: 30
