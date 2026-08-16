@@ -2,7 +2,7 @@ name: Build AINA Final VRM Release
 
 on:
   push:
-    branches: [build/aina-v10-first-fit]
+    branches: [release/aina-final-vrm]
     paths:
       - src/blender/aina_final_vrm_assembly.py
       - src/blender/aina_final_vrm_release.py
