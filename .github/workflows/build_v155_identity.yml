@@ -66,6 +66,7 @@ jobs:
         run: |
           python src/sculpt_aina_v155_identity.py \
             --base output_faceverse_v125/AINA_FACEVERSE_FULL_v12.5_DENSE_RESIDUAL.obj \
+            --target-landmarks references/AINA_TARGET_3DDFA_SPARSE_68.json \
             --out output_v155
 
       - name: Render calibrated v15.5 identity QA
