@@ -18,7 +18,7 @@ permissions:
 jobs:
   final:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -28,6 +28,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
           run-id: 31960168094
+
       - name: Validate locked v15.5 seed
         run: |
           python - <<'PY'
@@ -36,6 +37,7 @@ jobs:
           assert d.get('identity_lock') is True and all(d.get('checks',{}).values()),d
           print('IDENTITY_LOCK_OK',d['front_landmark_rmse_px'],d['front_landmark_max_px'])
           PY
+
       - name: Install Blender 4.5.12 and VRM Addon
         run: |
           sudo apt-get update >/dev/null
@@ -44,36 +46,79 @@ jobs:
           curl -fL -o .runtime/blender.tar.xz https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz
           tar -xf .runtime/blender.tar.xz -C .runtime/blender --strip-components=1
           git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
-      - name: Assemble merged VRM without preview render
-        env:
-          AINA_FAST_NO_PREVIEW: '1'
+          .runtime/blender/blender --version
+
+      - name: Assemble final AINA MASTER, render previews, and build 52-morph VRM 1.0
         run: |
-          .runtime/blender/blender --background --factory-startup --python-exit-code 1 --python src/blender/aina_final_vrm_morph_carrier_release.py -- --face seed/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj --identity-report seed/output_locked/AINA_FACEVERSE_v15.5_REPORT.json --out output_fast
-          cat output_fast/QA/AINA_VRM_MORPH_CARRIER_MERGE.json
-      - name: Clean-scene reimport hard QA
+          .runtime/blender/blender --background --factory-startup --python-exit-code 1 --python src/blender/aina_final_vrm_morph_carrier_release.py -- --face seed/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj --identity-report seed/output_locked/AINA_FACEVERSE_v15.5_REPORT.json --out output_final
+          cat output_final/QA/AINA_VRM_MORPH_CARRIER_MERGE.json
+
+      - name: Reimport final VRM into a clean Blender scene
         run: |
-          .runtime/blender/blender --background --factory-startup --python-exit-code 1 --python src/blender/aina_final_vrm_reimport_release.py -- --vrm output_fast/AINA.vrm --out output_fast
-          cat output_fast/QA/AINA_VRM_REIMPORT_QA.json
-      - name: Assert semantic and morph gate
+          .runtime/blender/blender --background --factory-startup --python-exit-code 1 --python src/blender/aina_final_vrm_reimport_release.py -- --vrm output_final/AINA.vrm --out output_final
+          cat output_final/QA/AINA_VRM_REIMPORT_QA.json
+
+      - name: Hard final production gate
         run: |
           python - <<'PY'
-          import json
-          q=json.load(open('output_fast/QA/AINA_VRM_REIMPORT_QA.json'))
-          m=json.load(open('output_fast/QA/AINA_VRM_MORPH_CARRIER_MERGE.json'))
-          assert q['pass'] is True,q
-          assert q['checks']['shape_controls_52'] is True,q
-          assert q['checks']['preset_bindings'] is True,q
-          assert m['target_names_count']==52 and m['preset_morph_bind_total']>=20,m
-          print('AINA_MERGED_VRM_FAST_GATE=PASS')
+          import json,pathlib,hashlib
+          root=pathlib.Path('output_final')
+          ident=json.load(open('seed/output_locked/AINA_FACEVERSE_v15.5_REPORT.json'))
+          assembly=json.load(open(root/'QA'/'AINA_FINAL_ASSEMBLY_QA.json'))
+          merge=json.load(open(root/'QA'/'AINA_VRM_MORPH_CARRIER_MERGE.json'))
+          reimp=json.load(open(root/'QA'/'AINA_VRM_REIMPORT_QA.json'))
+          req=[
+            root/'AINA_MASTER.blend',root/'AINA.vrm',root/'AINA_REIMPORT_CHECK.blend',
+            root/'Preview'/'AINA_PORTRAIT_FRONT.png',root/'Preview'/'AINA_PORTRAIT_3Q.png',root/'Preview'/'AINA_FULL_BODY_FRONT.png',
+            root/'QA'/'AINA_FINAL_ASSEMBLY_QA.json',root/'QA'/'AINA_VRM_MORPH_CARRIER_MERGE.json',root/'QA'/'AINA_VRM_REIMPORT_QA.json',
+          ]
+          missing=[str(p) for p in req if not p.exists() or p.stat().st_size==0]
+          if missing:raise SystemExit('Missing final files: '+repr(missing))
+          checks={
+            'identity_lock':ident.get('identity_lock') is True and all(ident.get('checks',{}).values()),
+            'assembly_pass':assembly.get('assembly_pass') is True,
+            'shape_controls_52_authored':assembly.get('shape_control_count')==52,
+            'vrm_presets_18_authored':assembly.get('vrm_preset_count')==18,
+            'spring_bones_authored':assembly.get('spring_bone_count',0)>=3,
+            'morph_carrier_52':merge.get('target_names_count')==52 and all(x==52 for x in merge.get('primitive_target_counts',[])),
+            'merged_expression_bindings':merge.get('preset_morph_bind_total',0)>=20,
+            'clean_reimport_pass':reimp.get('pass') is True,
+            'reimport_shape_controls_52':reimp.get('checks',{}).get('shape_controls_52') is True,
+            'reimport_presets_18':reimp.get('checks',{}).get('preset_18') is True,
+            'reimport_preset_bindings':reimp.get('checks',{}).get('preset_bindings') is True,
+            'reimport_humanoid':reimp.get('checks',{}).get('humanoid_required') is True,
+            'reimport_look_at':reimp.get('checks',{}).get('look_at') is True,
+            'reimport_spring_bones':reimp.get('checks',{}).get('spring_bones') is True,
+            'vrm_size':(root/'AINA.vrm').stat().st_size>=100000,
+          }
+          gate={'product':'AINA FINAL PRODUCTION RELEASE','pass':all(checks.values()),'checks':checks,'identity_rmse_px':ident.get('front_landmark_rmse_px'),'identity_max_px':ident.get('front_landmark_max_px'),'vrm_bytes':(root/'AINA.vrm').stat().st_size,'blend_bytes':(root/'AINA_MASTER.blend').stat().st_size}
+          (root/'QA'/'AINA_FINAL_RELEASE_GATE.json').write_text(json.dumps(gate,indent=2))
+          print(json.dumps(gate,indent=2))
+          if not gate['pass']:raise SystemExit('AINA FINAL RELEASE GATE FAILED')
+          print('AINA_FINAL_RELEASE_GATE=PASS')
           PY
-      - name: Upload verified fast gate
-        if: always()
+
+      - name: Package final deliverable
+        run: |
+          rm -rf release_package
+          mkdir -p release_package/QA
+          cp output_final/AINA_MASTER.blend release_package/
+          cp output_final/AINA.vrm release_package/
+          cp output_final/AINA_REIMPORT_CHECK.blend release_package/
+          cp seed/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.glb release_package/
+          cp seed/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj release_package/
+          cp -r output_final/Textures release_package/
+          cp -r output_final/Preview release_package/
+          cp -r output_final/QA/. release_package/QA/
+          cp seed/output_locked/AINA_FACEVERSE_v15.5_REPORT.json release_package/QA/AINA_FACE_IDENTITY_LOCK.json
+          cp -r seed/output_locked/QA release_package/QA/Face_Identity_Views
+          (cd release_package && sha256sum AINA_MASTER.blend AINA.vrm AINA_REIMPORT_CHECK.blend AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.glb AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj > SHA256SUMS.txt)
+          find release_package -maxdepth 3 -type f -printf '%p %s bytes\n' | sort
+
+      - name: Upload final AINA production release
         uses: actions/upload-artifact@v4
         with:
-          name: AINA-MERGED-VRM-FAST-GATE
-          path: |
-            output_fast/AINA.vrm
-            output_fast/AINA_REIMPORT_CHECK.blend
-            output_fast/QA/**
-          if-no-files-found: warn
-          retention-days: 3
+          name: AINA-FINAL-PRODUCTION-RELEASE
+          path: release_package/**
+          if-no-files-found: error
+          retention-days: 30
