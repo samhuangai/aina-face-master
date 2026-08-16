@@ -7,6 +7,7 @@ on:
       - src/blender/aina_final_vrm_assembly.py
       - src/blender/aina_final_vrm_reimport_qa.py
       - src/sculpt_aina_v155_identity.py
+      - src/finalize_aina_v155_lock.py
       - src/render_aina_v155_qa.py
       - references/AINA_APPROVED_FRONT_V2.jpg.b64
       - references/AINA_APPROVED_3Q.jpg.b64
@@ -59,7 +60,7 @@ jobs:
           cd vendor/faceverse-onnx
           python download_models.py --models faceverse_v4_2.npy faceverse_resnet50_float32.onnx
 
-      - name: Rebuild and hard-lock the same v15.5 face
+      - name: Rebuild clean v15.5 and hard-lock the same identity
         run: |
           python src/fit_aina_faceverse_v124_axisfix.py \
             --front references/AINA_APPROVED_FRONT.jpg \
@@ -73,17 +74,20 @@ jobs:
             --out output_faceverse_v125
           python src/sculpt_aina_v155_identity.py \
             --base output_faceverse_v125/AINA_FACEVERSE_FULL_v12.5_DENSE_RESIDUAL.obj \
-            --target-landmarks references/AINA_TARGET_3DDFA_SPARSE_68.json \
             --out output_v155
+          python src/finalize_aina_v155_lock.py \
+            --base output_v155/AINA_FACEVERSE_FULL_v15.5_CLEAN_IDENTITY.obj \
+            --target-landmarks references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --out output_locked
           python src/render_aina_v155_qa.py \
-            --clay output_v155/AINA_FACEVERSE_IDENTITY_CLAY_v15.5.obj \
+            --clay output_locked/AINA_FACEVERSE_IDENTITY_CLAY_v15.5_LOCKED.obj \
             --front references/AINA_APPROVED_FRONT.jpg \
             --q3 references/AINA_APPROVED_3Q.jpg \
             --side references/AINA_APPROVED_SIDE.jpg \
-            --out output_v155/QA
+            --out output_locked/QA
           python - <<'PY'
           import json
-          d=json.load(open('output_v155/AINA_FACEVERSE_v15.5_REPORT.json'))
+          d=json.load(open('output_locked/AINA_FACEVERSE_v15.5_REPORT.json'))
           if d.get('identity_lock') is not True or not all(d.get('checks',{}).values()):
               raise SystemExit('Final VRM blocked: v15.5 identity lock gate is not true')
           print('AINA_V15_5_IDENTITY_LOCK=TRUE')
@@ -117,8 +121,8 @@ jobs:
         run: |
           "$BLENDER" --background --factory-startup \
             --python src/blender/aina_final_vrm_assembly.py -- \
-            --face output_v155/AINA_FACEVERSE_FULL_v15.5_CLEAN_IDENTITY.obj \
-            --identity-report output_v155/AINA_FACEVERSE_v15.5_REPORT.json \
+            --face output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
+            --identity-report output_locked/AINA_FACEVERSE_v15.5_REPORT.json \
             --out output_final
 
       - name: Reimport final VRM into a clean Blender scene
@@ -142,7 +146,7 @@ jobs:
           if missing: raise SystemExit('Missing final production files: '+repr(missing))
           a=json.loads((root/'QA'/'AINA_FINAL_ASSEMBLY_QA.json').read_text())
           r=json.loads((root/'QA'/'AINA_VRM_REIMPORT_QA.json').read_text())
-          ident=json.loads(pathlib.Path('output_v155/AINA_FACEVERSE_v15.5_REPORT.json').read_text())
+          ident=json.loads(pathlib.Path('output_locked/AINA_FACEVERSE_v15.5_REPORT.json').read_text())
           checks={
             'identity_lock': ident.get('identity_lock') is True,
             'assembly_pass': a.get('assembly_pass') is True,
@@ -163,7 +167,7 @@ jobs:
         run: |
           echo '## AINA Final VRM Production' >> "$GITHUB_STEP_SUMMARY"
           echo "Blender 4.5 LTS patch: ${BLENDER_PATCH:-unknown}" >> "$GITHUB_STEP_SUMMARY"
-          for f in output_v155/AINA_FACEVERSE_v15.5_REPORT.json output_final/QA/AINA_FINAL_ASSEMBLY_QA.json output_final/QA/AINA_VRM_REIMPORT_QA.json output_final/QA/AINA_FINAL_RELEASE_GATE.json; do
+          for f in output_locked/AINA_FACEVERSE_v15.5_REPORT.json output_final/QA/AINA_FINAL_ASSEMBLY_QA.json output_final/QA/AINA_VRM_REIMPORT_QA.json output_final/QA/AINA_FINAL_RELEASE_GATE.json; do
             if [ -f "$f" ]; then
               echo "### $f" >> "$GITHUB_STEP_SUMMARY"
               echo '```json' >> "$GITHUB_STEP_SUMMARY"
@@ -179,7 +183,9 @@ jobs:
           name: aina-final-vrm-production
           path: |
             output_final/**
-            output_v155/AINA_FACEVERSE_v15.5_REPORT.json
-            output_v155/QA/**
+            output_locked/AINA_FACEVERSE_v15.5_REPORT.json
+            output_locked/QA/**
+            output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.*
+            output_locked/AINA_FACEVERSE_IDENTITY_CLAY_v15.5_LOCKED.*
           if-no-files-found: warn
           retention-days: 30
