@@ -1,0 +1,91 @@
+name: Review AINA MPFB Continuous Identity
+
+on:
+  push:
+    branches: [release/aina-final-production]
+    paths:
+      - src/sculpt_aina_mpfb_identity.py
+      - src/blender/aina_mpfb_identity_review.py
+      - .github/workflows/review_aina_mpfb_identity.yml
+  workflow_dispatch:
+
+concurrency:
+  group: aina-mpfb-identity-review
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download verified clean MPFB topology probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9276800536/zip" -o head.zip
+          unzip -q head.zip -d base
+          test -s base/AINA_MPFB_HEAD_TOPOLOGY.npz
+          test -s base/AINA_MPFB_HEAD_TOPOLOGY_QA.json
+          test -s base/AINA_MPFB_HEAD_TOPOLOGY.blend
+      - name: Sculpt AINA on the native continuous female topology
+        run: |
+          set -euo pipefail
+          pip install numpy==1.26.4 scipy
+          python src/sculpt_aina_mpfb_identity.py \
+            --topology base/AINA_MPFB_HEAD_TOPOLOGY.npz \
+            --qa base/AINA_MPFB_HEAD_TOPOLOGY_QA.json \
+            --out identity
+          python - <<'PY'
+          import json
+          d=json.load(open('identity/AINA_MPFB_v15.5_IDENTITY_REPORT.json'))
+          assert d['topology_changed'] is False and d['continuous_body'] is True
+          assert d['vertices']==19158 and d['head_vertices']>4500
+          assert d['identity_lock'] is False and d['visual_review_required'] is True
+          assert d['max_head_delta_m'] < .040
+          print(json.dumps(d,indent=2))
+          PY
+      - name: Install Blender 4.5.12 LTS
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libgl1-mesa-dri libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender && tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+      - name: Render real continuous-body AINA head front 3Q profile
+        run: |
+          set -euo pipefail
+          mkdir -p review
+          "$BLENDER" --background base/AINA_MPFB_HEAD_TOPOLOGY.blend --python-exit-code 1 \
+            --python src/blender/aina_mpfb_identity_review.py -- \
+            --candidate identity/AINA_MPFB_FULL_v15.5_IDENTITY_CANDIDATE.npz \
+            --out review
+          test -s review/AINA_MPFB_AINA_IDENTITY_REVIEW.blend
+          test -s review/Preview/AINA_MPFB_AINA_FRONT.png
+          test -s review/Preview/AINA_MPFB_AINA_3Q.png
+          test -s review/Preview/AINA_MPFB_AINA_PROFILE.png
+      - name: Package actual-model identity review
+        run: |
+          set -euo pipefail
+          mkdir -p package/Preview package/Identity
+          cp review/Preview/*.png package/Preview/
+          cp review/AINA_MPFB_AINA_IDENTITY_REVIEW.blend package/
+          cp identity/AINA_MPFB_FULL_v15.5_IDENTITY_CANDIDATE.obj package/Identity/
+          cp identity/AINA_MPFB_FULL_v15.5_IDENTITY_CANDIDATE.npz package/Identity/
+          cp identity/AINA_MPFB_v15.5_IDENTITY_REPORT.json package/Identity/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AINA-MPFB-CONTINUOUS-IDENTITY-REVIEW
+          path: package/**
+          if-no-files-found: error
+          retention-days: 14
