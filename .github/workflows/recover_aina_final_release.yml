@@ -1,0 +1,148 @@
+name: Recover AINA Final Production Release
+
+on:
+  push:
+    branches: [release/aina-final-production]
+    paths:
+      - src/patch_aina_vrm_morph_targets.py
+      - src/blender/aina_vrm_addon_runtime.py
+      - src/blender/aina_final_vrm_reimport_runtime.py
+      - src/blender/aina_final_vrm_reimport_qa.py
+      - .github/workflows/recover_aina_final_release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download verified locked-face assembly diagnostics
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o diag.zip
+          unzip -q diag.zip -d diag
+          test -s diag/output_final/AINA_MASTER.blend
+          test -s diag/output_final/AINA.vrm
+          test -s diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+          python - <<'PY'
+          import json
+          ident=json.load(open('diag/output_locked/AINA_FACEVERSE_v15.5_REPORT.json'))
+          assembly=json.load(open('diag/output_final/QA/AINA_FINAL_ASSEMBLY_QA.json'))
+          assert ident.get('identity_lock') is True and all(ident.get('checks',{}).values()), ident
+          assert assembly.get('assembly_pass') is True, assembly
+          assert assembly.get('shape_control_count') == 52, assembly
+          assert assembly.get('vrm_preset_count') == 18, assembly
+          assert assembly.get('spring_bone_count',0) >= 3, assembly
+          print('SOURCE_MASTER_AND_IDENTITY=PASS')
+          PY
+
+      - name: Restore exact 52 morph targets and 18 preset bindings
+        run: |
+          set -euo pipefail
+          pip install numpy==1.26.4 scipy
+          mkdir -p recovered/QA
+          cp -a diag/output_final/. recovered/
+          python src/patch_aina_vrm_morph_targets.py \
+            --vrm diag/output_final/AINA.vrm \
+            --locked-obj diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
+            --out recovered/AINA.vrm \
+            --report recovered/QA/AINA_VRM_MORPH_PATCH_QA.json
+          test $(stat -c%s recovered/AINA.vrm) -ge 100000
+
+      - name: Install Blender 4.5.12 LTS and VRM Addon v4.5.0
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libgl1-mesa-dri libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender && tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+          git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
+          blender/blender --version
+
+      - name: Clean-scene reimport the repaired final VRM
+        run: |
+          set -euo pipefail
+          "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_final_vrm_reimport_runtime.py -- \
+            --vrm recovered/AINA.vrm --out recovered
+          test -s recovered/AINA_REIMPORT_CHECK.blend
+          test -s recovered/QA/AINA_VRM_REIMPORT_QA.json
+
+      - name: Hard final release gate
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib
+          root=pathlib.Path('recovered');src=pathlib.Path('diag')
+          ident=json.load(open(src/'output_locked/AINA_FACEVERSE_v15.5_REPORT.json'))
+          assembly=json.load(open(root/'QA/AINA_FINAL_ASSEMBLY_QA.json'))
+          patch=json.load(open(root/'QA/AINA_VRM_MORPH_PATCH_QA.json'))
+          reimport=json.load(open(root/'QA/AINA_VRM_REIMPORT_QA.json'))
+          checks={
+            'identity_lock': ident.get('identity_lock') is True and all(ident.get('checks',{}).values()),
+            'front_identity_rmse': ident.get('front_landmark_rmse_px',999)<=1.10,
+            'front_identity_max': ident.get('front_landmark_max_px',999)<=3.0,
+            'assembly_pass': assembly.get('assembly_pass') is True,
+            'master_shape_controls_52': assembly.get('shape_control_count')==52,
+            'master_vrm_presets_18': assembly.get('vrm_preset_count')==18,
+            'master_spring_bones': assembly.get('spring_bone_count',0)>=3,
+            'morph_patch_52': patch.get('shape_key_count')==52 and all(x==52 for x in patch.get('primitive_target_counts',[])),
+            'preset_morph_binds_written': patch.get('preset_morph_bind_total',0)>0,
+            'reimport_pass': reimport.get('pass') is True and all(reimport.get('checks',{}).values()),
+            'reimport_shape_controls_52': len(reimport.get('missing_shape_controls',[]))==0,
+            'reimport_preset_bindings': reimport.get('total_preset_morph_binds',0)>0,
+            'vrm_size': (root/'AINA.vrm').stat().st_size>=100000,
+          }
+          if not all(checks.values()): raise SystemExit('FINAL GATE FAILED: '+repr(checks)+'\nREIMPORT='+repr(reimport))
+          gate={'product':'AINA FINAL PRODUCTION RELEASE','pass':True,'identity_lock':True,'checks':checks,'identity_rmse_px':ident['front_landmark_rmse_px'],'identity_max_px':ident['front_landmark_max_px'],'shape_controls':52,'vrm_presets':18,'spring_bones':assembly['spring_bone_count'],'preset_morph_binds':reimport['total_preset_morph_binds'],'vrm_bytes':(root/'AINA.vrm').stat().st_size}
+          (root/'QA/AINA_FINAL_RELEASE_GATE.json').write_text(json.dumps(gate,indent=2),encoding='utf-8')
+          print(json.dumps(gate,indent=2));print('AINA_FINAL_PRODUCTION_GATE=PASS')
+          PY
+
+      - name: Assemble final delivery package
+        run: |
+          set -euo pipefail
+          rm -rf AINA_FINAL
+          mkdir -p AINA_FINAL/QA
+          cp recovered/AINA_MASTER.blend AINA_FINAL/
+          cp recovered/AINA.vrm AINA_FINAL/
+          cp recovered/AINA_REIMPORT_CHECK.blend AINA_FINAL/
+          cp -r recovered/Textures AINA_FINAL/
+          cp -r recovered/Preview AINA_FINAL/
+          cp -r recovered/QA/. AINA_FINAL/QA/
+          cp diag/output_locked/AINA_FACEVERSE_v15.5_REPORT.json AINA_FINAL/QA/AINA_FACE_IDENTITY_LOCK.json
+          cp -r diag/output_locked/QA AINA_FINAL/QA/FaceIdentityViews
+          cp diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.glb AINA_FINAL/
+          cp diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj AINA_FINAL/
+          (cd AINA_FINAL && sha256sum AINA_MASTER.blend AINA.vrm AINA_REIMPORT_CHECK.blend AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.glb AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj > SHA256SUMS.txt)
+
+      - name: Upload final production release
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-FINAL-PRODUCTION-RELEASE
+          path: AINA_FINAL/**
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload recovery diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-FINAL-RECOVERY-DIAGNOSTICS
+          path: recovered/**
+          if-no-files-found: warn
+          retention-days: 14
