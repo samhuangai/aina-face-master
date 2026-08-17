@@ -4,7 +4,6 @@ on:
   push:
     branches: [release/aina-final-production]
     paths:
-      - src/blender/aina_mpfb_addon_runtime.py
       - src/blender/aina_mpfb_body_probe.py
       - .github/workflows/probe_aina_mpfb_body.yml
   workflow_dispatch:
@@ -22,7 +21,7 @@ jobs:
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
-      - name: Install Blender 4.5.12 and MPFB2
+      - name: Install Blender 4.5.12 and build MPFB2 extension package
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -31,6 +30,11 @@ jobs:
           mkdir blender && tar -xf blender.tar.xz -C blender --strip-components=1
           echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
           git clone --depth 1 https://github.com/makehumancommunity/mpfb2.git vendor/mpfb2
+          "$PWD/blender/blender" --command extension build --source-dir vendor/mpfb2/src/mpfb --output-filepath "$PWD/mpfb-extension.zip"
+          mkdir -p "$PWD/.blender-extensions"
+          "$PWD/blender/blender" --command extension repo-add aina_local --name "AINA Local Extensions" --directory "$PWD/.blender-extensions" --clear-all
+          "$PWD/blender/blender" --command extension install-file -r aina_local -e "$PWD/mpfb-extension.zip"
+          "$PWD/blender/blender" --command extension list
       - name: Build continuous human body and game-engine rig
         run: |
           set -euo pipefail
