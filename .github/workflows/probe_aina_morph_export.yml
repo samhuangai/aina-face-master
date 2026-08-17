@@ -1,0 +1,47 @@
+name: Probe AINA Morph Export
+
+on:
+  push:
+    branches: [build/aina-v10-first-fit]
+    paths:
+      - src/blender/aina_morph_export_probe.py
+      - .github/workflows/probe_aina_morph_export.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download last final-production diagnostic MASTER
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o diag.zip
+          unzip -q diag.zip -d diag
+          test -s diag/output_final/AINA_MASTER.blend
+      - name: Install Blender 4.5.12 LTS
+        run: |
+          set -euo pipefail
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender && tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+      - name: Probe Basis plus 52 morph targets
+        run: |
+          set -euo pipefail
+          "$BLENDER" --background diag/output_final/AINA_MASTER.blend --python-exit-code 1 --python src/blender/aina_morph_export_probe.py -- morph_probe
+          cat morph_probe/MORPH_PROBE.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-MORPH-PROBE
+          path: morph_probe/**
+          if-no-files-found: warn
+          retention-days: 7
