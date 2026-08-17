@@ -1,0 +1,47 @@
+name: Probe AINA MPFB2 Continuous Body
+
+on:
+  push:
+    branches: [release/aina-final-production]
+    paths:
+      - src/blender/aina_mpfb_addon_runtime.py
+      - src/blender/aina_mpfb_body_probe.py
+      - .github/workflows/probe_aina_mpfb_body.yml
+  workflow_dispatch:
+
+concurrency:
+  group: aina-mpfb-body-probe
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Blender 4.5.12 and MPFB2
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libgl1-mesa-dri libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6 git
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender && tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+          git clone --depth 1 https://github.com/makehumancommunity/mpfb2.git vendor/mpfb2
+      - name: Build continuous human body and game-engine rig
+        run: |
+          set -euo pipefail
+          "$BLENDER" --background --factory-startup --python-exit-code 1 --python src/blender/aina_mpfb_body_probe.py -- mpfb_probe
+          test -s mpfb_probe/AINA_MPFB_BODY.blend
+          test -s mpfb_probe/AINA_MPFB_BODY_FRONT.png
+          cat mpfb_probe/AINA_MPFB_BODY_QA.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-MPFB2-CONTINUOUS-BODY-PROBE
+          path: mpfb_probe/**
+          if-no-files-found: warn
+          retention-days: 7
