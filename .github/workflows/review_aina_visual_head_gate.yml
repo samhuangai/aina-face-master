@@ -1,0 +1,78 @@
+name: AINA Real Blender Head Visual Gate
+
+on:
+  push:
+    branches: [release/aina-final-production]
+    paths:
+      - src/sculpt_aina_v155_visual_final.py
+      - src/blender/aina_visual_head_gate.py
+      - .github/workflows/review_aina_visual_head_gate.yml
+  workflow_dispatch:
+
+concurrency:
+  group: aina-real-head-gate
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download prior locked topology only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9276172373/zip" -o prior.zip
+          unzip -q prior.zip -d prior
+          test -s prior/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+      - name: Build v15.5 visual-final actual mesh
+        run: |
+          set -euo pipefail
+          pip install numpy==1.26.4 scipy trimesh
+          python src/sculpt_aina_v155_visual_final.py --base prior/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj --out visual_face
+          python - <<'PY'
+          import json
+          d=json.load(open('visual_face/AINA_FACEVERSE_v15.5_VISUAL_FINAL_REPORT.json'))
+          assert d['identity_lock'] is False and d['visual_review_required'] is True
+          assert d['topology_changed'] is False and d['two_eye_components'] is True
+          PY
+      - name: Install Blender 4.5.12 LTS
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libgl1-mesa-dri libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender && tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+      - name: Render actual v15.5 head in Blender
+        run: |
+          set -euo pipefail
+          mkdir -p head_gate
+          "$BLENDER" --background --factory-startup --python-exit-code 1 --python src/blender/aina_visual_head_gate.py -- --face visual_face/AINA_FACEVERSE_FULL_v15.5_VISUAL_FINAL.obj --out head_gate
+          test -s head_gate/AINA_HEAD_FRONT.png
+          test -s head_gate/AINA_HEAD_3Q.png
+          test -s head_gate/AINA_HEAD_PROFILE.png
+          test -s head_gate/AINA_HEAD_VISUAL_GATE.blend
+      - name: Package real head visual gate
+        run: |
+          mkdir -p package/Preview package/Face
+          cp head_gate/*.png package/Preview/
+          cp head_gate/AINA_HEAD_VISUAL_GATE.blend package/
+          cp visual_face/AINA_FACEVERSE_FULL_v15.5_VISUAL_FINAL.obj visual_face/AINA_FACEVERSE_FULL_v15.5_VISUAL_FINAL.glb package/Face/
+          cp visual_face/AINA_FACEVERSE_v15.5_VISUAL_FINAL_REPORT.json package/Face/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AINA-REAL-BLENDER-HEAD-VISUAL-GATE
+          path: package/**
+          if-no-files-found: error
+          retention-days: 14
