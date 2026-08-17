@@ -1,0 +1,49 @@
+name: Probe AINA MPFB Rig Space
+on:
+  push:
+    branches: [release/aina-final-production]
+    paths:
+      - src/blender/aina_mpfb_rig_space_probe.py
+      - .github/workflows/probe_aina_mpfb_rig_space.yml
+  workflow_dispatch:
+concurrency:
+  group: aina-mpfb-rig-space
+  cancel-in-progress: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download verified MPFB topology blend
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9276800536/zip" -o base.zip
+          unzip -q base.zip -d base
+          test -s base/AINA_MPFB_HEAD_TOPOLOGY.blend
+      - name: Install Blender 4.5.12
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libgl1-mesa-dri libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender && tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+      - name: Inspect game-engine rig and evaluated mesh space
+        run: |
+          set -euo pipefail
+          "$BLENDER" --background base/AINA_MPFB_HEAD_TOPOLOGY.blend --python-exit-code 1 --python src/blender/aina_mpfb_rig_space_probe.py -- rig_probe
+          test -s rig_probe/AINA_MPFB_RIG_SPACE_QA.json
+          cat rig_probe/AINA_MPFB_RIG_SPACE_QA.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-MPFB-RIG-SPACE-PROBE
+          path: rig_probe/**
+          if-no-files-found: warn
+          retention-days: 7
