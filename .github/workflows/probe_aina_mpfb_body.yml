@@ -38,7 +38,9 @@ jobs:
       - name: Build continuous human body and game-engine rig
         run: |
           set -euo pipefail
-          "$BLENDER" --background --factory-startup --python-exit-code 1 --python src/blender/aina_mpfb_body_probe.py -- mpfb_probe
+          # Do not use --factory-startup here: it intentionally discards the
+          # extension repository/preferences created in the previous step.
+          "$BLENDER" --background --python-exit-code 1 --python src/blender/aina_mpfb_body_probe.py -- mpfb_probe
           test -s mpfb_probe/AINA_MPFB_BODY.blend
           test -s mpfb_probe/AINA_MPFB_BODY_FRONT.png
           cat mpfb_probe/AINA_MPFB_BODY_QA.json
