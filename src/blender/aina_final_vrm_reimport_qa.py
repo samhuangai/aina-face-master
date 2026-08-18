@@ -13,7 +13,12 @@ SHAPE_KEYS=[
     'mouthClose','mouthDimpleLeft','mouthDimpleRight','mouthFrownLeft','mouthFrownRight','mouthFunnel','mouthLeft','mouthLowerDownLeft','mouthLowerDownRight','mouthPressLeft','mouthPressRight','mouthPucker','mouthRight','mouthRollLower','mouthRollUpper','mouthShrugLower','mouthShrugUpper','mouthSmileLeft','mouthSmileRight','mouthStretchLeft','mouthStretchRight','mouthUpperUpLeft','mouthUpperUpRight',
     'noseSneerLeft','noseSneerRight','tongueOut',
 ]
-PRESETS=['happy','angry','sad','relaxed','surprised','neutral','aa','ih','ou','ee','oh','blink','blink_left','blink_right','look_up','look_down','look_left','look_right']
+EXPECTED_PRESET_BINDS={
+    'happy':4,'angry':4,'sad':3,'relaxed':4,'surprised':4,'neutral':0,
+    'aa':2,'ih':2,'ou':2,'ee':4,'oh':2,'blink':2,
+    'blink_left':1,'blink_right':1,'look_up':2,'look_down':2,'look_left':2,'look_right':2,
+}
+PRESETS=list(EXPECTED_PRESET_BINDS)
 REQUIRED_HUMANOID=['hips','spine','chest','neck','head','left_upper_arm','right_upper_arm','left_lower_arm','right_lower_arm','left_hand','right_hand','left_upper_leg','right_upper_leg','left_lower_leg','right_lower_leg','left_foot','right_foot']
 
 def args():
@@ -58,6 +63,7 @@ def main():
             if len(names)>1: shape_meshes.append({'object':o.name,'keys':names})
             all_keys.update(names)
     missing_shapes=[x for x in SHAPE_KEYS if x not in all_keys]
+    found_shapes=[x for x in SHAPE_KEYS if x in all_keys]
 
     hb=ext.vrm1.humanoid.human_bones; humanoid={}; missing_humanoid=[]
     for attr in REQUIRED_HUMANOID:
@@ -77,6 +83,11 @@ def main():
             preset_missing.append(name); preset_counts[name]=-1
         else:
             preset_counts[name]=len(expr.morph_target_binds)
+    preset_mismatches={
+        name:{'expected':EXPECTED_PRESET_BINDS[name],'actual':preset_counts.get(name,-1)}
+        for name in PRESETS
+        if preset_counts.get(name,-1)!=EXPECTED_PRESET_BINDS[name]
+    }
     expression_bound=sum(max(0,n) for n in preset_counts.values())
 
     look_type=str(ext.vrm1.look_at.type)
@@ -84,10 +95,10 @@ def main():
     spring_names=[{'name':getattr(s,'vrm_name',''),'joints':[j.node.bone_name for j in s.joints]} for s in ext.spring_bone1.springs]
     checks={
         'vrm_1_0':ext.spec_version=='1.0',
-        'shape_controls_52':len(missing_shapes)==0 and len(SHAPE_KEYS)==52,
+        'shape_controls_52':len(found_shapes)==52 and len(missing_shapes)==0,
         'humanoid_required':len(missing_humanoid)==0,
         'preset_18':len(preset_missing)==0 and len(preset_counts)==18,
-        'preset_bindings':expression_bound>=20,
+        'preset_bindings_exact':len(preset_mismatches)==0 and expression_bound==sum(EXPECTED_PRESET_BINDS.values()),
         'look_at':bool(look_type),
         'spring_bones':spring_count>=3 and spring_joints>=6,
         'file_size':a.vrm.stat().st_size>=100_000,
@@ -96,9 +107,14 @@ def main():
     qa={
         'product':'AINA Final VRM Reimport QA','pass':passed,'source_vrm':str(a.vrm),'vrm_bytes':a.vrm.stat().st_size,
         'armature':rig.name,'spec_version':ext.spec_version,'checks':checks,
+        'shape_controls_found':len(found_shapes),'shape_controls_expected':52,
         'missing_shape_controls':missing_shapes,'shape_meshes':shape_meshes,
         'humanoid':humanoid,'missing_humanoid':missing_humanoid,
-        'preset_bind_counts':preset_counts,'missing_presets':preset_missing,'total_preset_morph_binds':expression_bound,
+        'preset_bind_counts':preset_counts,'expected_preset_bind_counts':EXPECTED_PRESET_BINDS,
+        'preset_binding_mismatches':preset_mismatches,'missing_presets':preset_missing,
+        'presets_verified':18-len(preset_mismatches)-len(preset_missing),
+        'presets_expected':18,'total_preset_morph_binds':expression_bound,
+        'expected_total_preset_morph_binds':sum(EXPECTED_PRESET_BINDS.values()),
         'look_at_type':look_type,'spring_bone_count':spring_count,'spring_joint_count':spring_joints,'spring_bones':spring_names,
     }
     p=a.out/'QA'/'AINA_VRM_REIMPORT_QA.json'; p.write_text(json.dumps(qa,indent=2),encoding='utf-8')

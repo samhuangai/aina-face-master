@@ -1,0 +1,78 @@
+name: Verify AINA Final Morph Reimport
+
+on:
+  push:
+    branches: [build/aina-v10-first-fit]
+    paths:
+      - src/blender/aina_reexport_preserve_morphs.py
+      - src/blender/aina_final_vrm_reimport_qa.py
+      - .github/workflows/verify_aina_final_morph_reimport.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download locked final MASTER from production diagnostics
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o diag.zip
+          unzip -q diag.zip -d diag
+          test -s diag/output_final/AINA_MASTER.blend
+
+      - name: Install Blender 4.5.12 LTS and VRM Addon v4.5.0
+        run: |
+          set -euo pipefail
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+          git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
+
+      - name: Re-export AINA.vrm with 52 morphs preserved
+        run: |
+          set -euo pipefail
+          mkdir -p verified_final
+          "$BLENDER" --background diag/output_final/AINA_MASTER.blend --python-exit-code 1 \
+            --python src/blender/aina_reexport_preserve_morphs.py -- --out verified_final
+          test -s verified_final/AINA.vrm
+          test -s verified_final/QA/AINA_VRM_BINARY_MORPH_QA.json
+          cat verified_final/QA/AINA_VRM_BINARY_MORPH_QA.json
+
+      - name: Clean reimport and require 52/52 controls plus 18/18 preset bindings
+        run: |
+          set -euo pipefail
+          "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_final_vrm_reimport_runtime.py -- \
+            --vrm verified_final/AINA.vrm --out verified_final
+          python3 - <<'PY'
+          import json
+          q=json.load(open('verified_final/QA/AINA_VRM_REIMPORT_QA.json'))
+          assert q['pass'] is True, q
+          assert q['shape_controls_found']==52 and not q['missing_shape_controls'], q
+          assert q['presets_verified']==18 and not q['preset_binding_mismatches'], q
+          assert q['total_preset_morph_binds']==43, q
+          print('AINA_FINAL_REIMPORT_52_OF_52=TRUE')
+          print('AINA_FINAL_PRESET_BINDINGS_18_OF_18=TRUE')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-FINAL-MORPH-REIMPORT-VERIFIED
+          path: |
+            verified_final/AINA.vrm
+            verified_final/AINA_REIMPORT_CHECK.blend
+            verified_final/QA/**
+          if-no-files-found: warn
+          retention-days: 14
