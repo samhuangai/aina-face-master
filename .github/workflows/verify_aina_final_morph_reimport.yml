@@ -2,7 +2,7 @@ name: Verify AINA Final Morph Reimport
 
 on:
   push:
-    branches: [build/aina-v10-first-fit]
+    branches: [build/aina-v10-first-fit, verify/aina-final-vrm]
     paths:
       - src/blender/aina_reexport_preserve_morphs.py
       - src/blender/aina_final_vrm_reimport_qa.py
@@ -132,5 +132,5 @@ jobs:
           git add qa/AINA_FINAL_REIMPORT_VERIFIED.json
           if ! git diff --cached --quiet; then
             git commit -m "Record AINA final VRM reimport verification"
-            git push origin HEAD:build/aina-v10-first-fit
+            git push origin HEAD:${GITHUB_REF_NAME}
           fi
