@@ -1,12 +1,14 @@
 name: Build AINA Real 3D Visual Identity
 
-# Real-mesh visual lock build. No new reference art is generated.
+# Full real-model visual QA. No replacement reference art is generated.
 on:
   push:
     branches: [production/aina-visual-lock]
     paths:
       - src/blender/aina_visual_identity_assembly.py
       - src/blender/aina_visual_identity_runtime.py
+      - src/blender/aina_visual_eye_system.py
+      - src/blender/aina_visual_hair_system.py
       - .github/workflows/build_aina_visual_identity.yml
   workflow_dispatch:
 
@@ -26,12 +28,10 @@ jobs:
       LIBGL_ALWAYS_SOFTWARE: '1'
     steps:
       - uses: actions/checkout@v4
-
       - name: Initialize status
         run: |
           mkdir -p qa
           printf '{"stage":"checkout","pass":false,"run_id":"%s","source_commit":"%s"}\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" > qa/AINA_VISUAL_BUILD_STATUS.json
-
       - name: Download existing locked v15.5 real mesh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -42,7 +42,6 @@ jobs:
           unzip -q diag.zip -d diag
           test -s diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
           test -s diag/output_locked/AINA_FACEVERSE_v15.5_REPORT.json
-
       - name: Install Blender 4.5.12 LTS and render runtime
         run: |
           set -euo pipefail
@@ -54,7 +53,6 @@ jobs:
           echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
           git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
           ./blender/blender --version
-
       - name: Sculpt and assemble the actual real 3D model
         run: |
           set +e
@@ -67,7 +65,6 @@ jobs:
           code=${PIPESTATUS[0]}
           echo "$code" > qa/AINA_VISUAL_BLENDER_EXIT.txt
           exit "$code"
-
       - name: Record actual model geometry metrics
         if: success()
         run: |
@@ -84,7 +81,6 @@ jobs:
           d['vrm_candidate_bytes']=pathlib.Path('output_visual/AINA.vrm').stat().st_size if pathlib.Path('output_visual/AINA.vrm').exists() else 0
           q.write_text(json.dumps(d,indent=2),encoding='utf-8'); print(json.dumps(d,indent=2))
           PY
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -98,7 +94,6 @@ jobs:
             qa/AINA_VISUAL_BLENDER_EXIT.txt
           if-no-files-found: warn
           retention-days: 14
-
       - name: Publish exact visual build status
         if: always()
         env:
