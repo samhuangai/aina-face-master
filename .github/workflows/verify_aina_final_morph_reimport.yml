@@ -26,6 +26,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          rm -rf verified_final
+          mkdir -p verified_final/QA
+          echo "download_running" > verified_final/QA/VERIFY_STAGE.txt
           curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o diag.zip
           unzip -q diag.zip -d diag
@@ -34,35 +37,42 @@ jobs:
           unzip -q probe.zip -d probe
           test -s diag/output_final/AINA.vrm
           test -s probe/raw_head.glb
+          echo "download_passed" > verified_final/QA/VERIFY_STAGE.txt
 
       - name: Restore exact 52 morph targets and 18 preset bindings
         run: |
           set -euo pipefail
-          python3 -m pip install --user numpy
-          rm -rf verified_final
-          mkdir -p verified_final
-          python3 src/repair_aina_final_vrm_morphs.py \
+          echo "restore_environment" > verified_final/QA/VERIFY_STAGE.txt
+          python3 -m venv .verify-venv
+          .verify-venv/bin/python -m pip install --disable-pip-version-check --quiet numpy
+          echo "restore_running" > verified_final/QA/VERIFY_STAGE.txt
+          .verify-venv/bin/python src/repair_aina_final_vrm_morphs.py \
             --base-vrm diag/output_final/AINA.vrm \
             --morph-glb probe/raw_head.glb \
-            --out verified_final
+            --out verified_final 2>&1 | tee verified_final/QA/restore.log
           test -s verified_final/AINA.vrm
+          test -s verified_final/QA/AINA_VRM_BINARY_MORPH_QA.json
           cat verified_final/QA/AINA_VRM_BINARY_MORPH_QA.json
+          echo "binary_passed" > verified_final/QA/VERIFY_STAGE.txt
 
       - name: Install Blender 4.5.12 LTS and VRM Addon v4.5.0
         run: |
           set -euo pipefail
+          echo "blender_install_running" > verified_final/QA/VERIFY_STAGE.txt
           curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
           mkdir blender
           tar -xf blender.tar.xz -C blender --strip-components=1
           echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
           git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
+          echo "blender_install_passed" > verified_final/QA/VERIFY_STAGE.txt
 
       - name: Clean Blender reimport hard gate
         run: |
           set -euo pipefail
+          echo "reimport_running" > verified_final/QA/VERIFY_STAGE.txt
           "$BLENDER" --background --factory-startup --python-exit-code 1 \
             --python src/blender/aina_final_vrm_reimport_runtime.py -- \
-            --vrm verified_final/AINA.vrm --out verified_final
+            --vrm verified_final/AINA.vrm --out verified_final 2>&1 | tee verified_final/QA/reimport.log
           python3 - <<'PY'
           import json
           q=json.load(open('verified_final/QA/AINA_VRM_REIMPORT_QA.json'))
@@ -73,6 +83,7 @@ jobs:
           print('AINA_FINAL_REIMPORT_52_OF_52=TRUE')
           print('AINA_FINAL_PRESET_BINDINGS_18_OF_18=TRUE')
           PY
+          echo "reimport_passed" > verified_final/QA/VERIFY_STAGE.txt
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -89,6 +100,7 @@ jobs:
         if: always()
         env:
           VERIFY_COMMIT: ${{ github.sha }}
+          VERIFY_RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -96,7 +108,9 @@ jobs:
           from pathlib import Path
           marker={
               'source_commit': os.environ.get('VERIFY_COMMIT',''),
+              'run_id': os.environ.get('VERIFY_RUN_ID',''),
               'pass': False,
+              'stage': '',
               'shape_controls_found': 0,
               'shape_controls_expected': 52,
               'presets_verified': 0,
@@ -105,6 +119,11 @@ jobs:
               'expected_total_preset_morph_binds': 43,
               'binary_pass': False,
           }
+          stage=Path('verified_final/QA/VERIFY_STAGE.txt')
+          if stage.exists(): marker['stage']=stage.read_text(errors='replace').strip()
+          for name in ('restore','reimport'):
+              log=Path(f'verified_final/QA/{name}.log')
+              if log.exists(): marker[f'{name}_log_tail']=log.read_text(errors='replace')[-7000:]
           b=Path('verified_final/QA/AINA_VRM_BINARY_MORPH_QA.json')
           r=Path('verified_final/QA/AINA_VRM_REIMPORT_QA.json')
           if b.exists():
