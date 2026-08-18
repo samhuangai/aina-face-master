@@ -45,9 +45,33 @@ jobs:
         run: |
           set +e
           mkdir -p quick_head_qa qa
-          # Fix the component-sort typo in the quick harness only. This does not
-          # alter the production model or its topology.
-          sed -i 's/mapped(raw)\[g,0\]/mapped(raw)[gs[r],0]/' src/blender/aina_real_head_quick_qa.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/blender/aina_real_head_quick_qa.py')
+          s=p.read_text()
+          repl={
+            "mapped(raw)[g,0]":"mapped(raw)[gs[r],0]",
+            "1-.075*(t**1.30)":"1-.115*(t**1.30)",
+            "(.83,.98,.95)":"(.78,.98,.94)",
+            "(.78,.82,.78)":"(.58,.70,.62)",
+            "((.004 if c[0]<0 else -.004),.004,0)":"((.008 if c[0]<0 else -.008),.006,0)",
+            "shift(o,h,nb,(.030,.030,.032),(0,.0020,.0005)":"shift(o,h,nb,(.030,.030,.032),(0,.0005,.0005)",
+            "shift(o,h,tip,(.022,.026,.026),(0,.0010,.0003)":"shift(o,h,tip,(.022,.026,.026),(0,-.0020,.0003)",
+            "rx=.0152;rz=.0055":"rx=.0160;rz=.0061",
+            "disc('AINA_Iris_'+side,.0046":"disc('AINA_Iris_'+side,.00515",
+            "disc('AINA_Pupil_'+side,.0019":"disc('AINA_Pupil_'+side,.00215",
+            "q=((c[0]-mc[0])/.023)**2+((c[2]-mc[2])/.0080)**2":"q=((c[0]-mc[0])/.0205)**2+((c[2]-mc[2])/.0065)**2",
+            "scene.world.color=(.93,.94,.96)":"scene.world.color=(.035,.040,.055)",
+            "area('Key',(1.0,-1.5,2.1),500,2.4);area('Fill',(-1.2,-1.4,1.8),260,2.2);area('Rim',(0,1.2,2.0),260,2.0)":"area('Key',(1.0,-1.5,2.1),260,2.4);area('Fill',(-1.2,-1.4,1.8),105,2.2);area('Rim',(0,1.2,2.0),150,2.0)",
+            "(.82,.69,.67)":"(.74,.56,.54)",
+            "(.60,.28,.31)":"(.46,.16,.20)",
+            "(.10,.09,.12)":"(.045,.040,.060)"
+          }
+          for a,b in repl.items():
+            if a not in s: print('PATCH_MISS',a)
+            s=s.replace(a,b)
+          p.write_text(s)
+          PY
           "$BLENDER" --background --factory-startup --python-exit-code 1 \
             --python src/blender/aina_real_head_quick_qa.py -- \
             --face diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
