@@ -45,6 +45,9 @@ jobs:
         run: |
           set +e
           mkdir -p quick_head_qa qa
+          # Fix the component-sort typo in the quick harness only. This does not
+          # alter the production model or its topology.
+          sed -i 's/mapped(raw)\[g,0\]/mapped(raw)[gs[r],0]/' src/blender/aina_real_head_quick_qa.py
           "$BLENDER" --background --factory-startup --python-exit-code 1 \
             --python src/blender/aina_real_head_quick_qa.py -- \
             --face diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
