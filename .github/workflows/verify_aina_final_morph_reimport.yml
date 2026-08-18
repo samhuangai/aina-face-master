@@ -2,10 +2,11 @@ name: Verify AINA Final Morph Reimport
 
 on:
   push:
-    branches: [build/aina-v10-first-fit, verify/aina-final-vrm]
+    branches: [verify/aina-final-vrm]
     paths:
-      - src/blender/aina_reexport_preserve_morphs.py
+      - src/repair_aina_final_vrm_morphs.py
       - src/blender/aina_final_vrm_reimport_qa.py
+      - src/blender/aina_final_vrm_reimport_runtime.py
       - .github/workflows/verify_aina_final_morph_reimport.yml
   workflow_dispatch:
 
@@ -20,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download locked final MASTER from production diagnostics
+      - name: Download final VRM base and proven 52-morph probe
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -28,7 +29,24 @@ jobs:
           curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o diag.zip
           unzip -q diag.zip -d diag
-          test -s diag/output_final/AINA_MASTER.blend
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9276097975/zip" -o probe.zip
+          unzip -q probe.zip -d probe
+          test -s diag/output_final/AINA.vrm
+          test -s probe/raw_head.glb
+
+      - name: Restore exact 52 morph targets and 18 preset bindings
+        run: |
+          set -euo pipefail
+          python3 -m pip install --user numpy
+          rm -rf verified_final
+          mkdir -p verified_final
+          python3 src/repair_aina_final_vrm_morphs.py \
+            --base-vrm diag/output_final/AINA.vrm \
+            --morph-glb probe/raw_head.glb \
+            --out verified_final
+          test -s verified_final/AINA.vrm
+          cat verified_final/QA/AINA_VRM_BINARY_MORPH_QA.json
 
       - name: Install Blender 4.5.12 LTS and VRM Addon v4.5.0
         run: |
@@ -39,17 +57,7 @@ jobs:
           echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
           git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
 
-      - name: Re-export AINA.vrm with 52 morphs preserved
-        run: |
-          set -euo pipefail
-          mkdir -p verified_final
-          "$BLENDER" --background diag/output_final/AINA_MASTER.blend --python-exit-code 1 \
-            --python src/blender/aina_reexport_preserve_morphs.py -- --out verified_final
-          test -s verified_final/AINA.vrm
-          test -s verified_final/QA/AINA_VRM_BINARY_MORPH_QA.json
-          cat verified_final/QA/AINA_VRM_BINARY_MORPH_QA.json
-
-      - name: Clean reimport and require 52/52 controls plus 18/18 preset bindings
+      - name: Clean Blender reimport hard gate
         run: |
           set -euo pipefail
           "$BLENDER" --background --factory-startup --python-exit-code 1 \
@@ -106,6 +114,7 @@ jobs:
               marker['binary_preset_count']=bd.get('preset_count',0)
               marker['binary_total_preset_morph_binds']=bd.get('total_preset_morph_binds',0)
               marker['vrm_bytes']=bd.get('vrm_bytes',0)
+              marker['primitive_target_counts']=bd.get('primitive_target_counts',[])
           if r.exists():
               rd=json.loads(r.read_text())
               marker['reimport_pass']=bool(rd.get('pass'))
