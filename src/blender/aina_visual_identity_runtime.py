@@ -17,6 +17,7 @@ def main():
     import aina_final_vrm_release as release
     import aina_visual_identity_assembly as visual
     import aina_visual_eye_system as eye_system
+    import aina_visual_hair_system as hair_system
 
     def already_enabled(_root:Path):
         if 'io_scene_vrm' not in bpy.context.preferences.addons:
@@ -24,8 +25,7 @@ def main():
         return None,None,None
 
     def w(coords,c,r,inner=0.0,outer=1.0):
-        c=np.asarray(c,float);r=np.asarray(r,float)
-        q=np.sqrt(np.sum(((coords-c)/r)**2,axis=1));a=np.zeros(len(coords),float);a[q<=inner]=1.0
+        c=np.asarray(c,float);r=np.asarray(r,float);q=np.sqrt(np.sum(((coords-c)/r)**2,axis=1));a=np.zeros(len(coords),float);a[q<=inner]=1.0
         m=(q>inner)&(q<outer)
         if np.any(m):
             t=(q[m]-inner)/(outer-inner+1e-12);a[m]=.5*(1+np.cos(np.pi*t))
@@ -37,27 +37,35 @@ def main():
 
     def corrected_polish(mapped,head_ids,eye_groups):
         out=mapped.copy();h=np.asarray(head_ids,np.int64)
-        z=out[h,2];t=np.clip((1.565-z)/.060,0,1);p=out[h].copy();p[:,0]*=(1-.055*(t**1.35));out[h]=p
+        # Restrained lower third taper + rounded chin.
+        z=out[h,2];t=np.clip((1.570-z)/.068,0,1);p=out[h].copy();p[:,0]*=(1-.075*(t**1.30));out[h]=p
         lm=out[visual.K].copy();chin=lm[8]
-        sc(out,h,chin,(.040,.042,.037),(.86,.98,.96),0,1.08);sh(out,h,chin,(.042,.042,.040),(0,-.0012,.0010),0,1.02)
+        sc(out,h,chin,(.040,.042,.037),(.83,.98,.95),0,1.08);sh(out,h,chin,(.042,.042,.040),(0,-.0012,.0012),0,1.02)
+        # Mild upper cranium trim. Hair supplies the final silhouette.
         z=out[h,2];wt=np.clip((z-1.635)/.080,0,1);p=out[h].copy();p[:,0]*=(1-.025*wt);out[h]=p
+        # Shallow youthful eye sockets / brow plane.
         lm=out[visual.K].copy()
         for rr in (range(36,42),range(42,48)):
             c=lm[list(rr)].mean(0);sh(out,h,(c[0],c[1]+.008,c[2]+.013),(.040,.038,.028),(0,.0045,.0005),0,1.15)
         lm=out[visual.K].copy()
         for rr in (range(17,22),range(22,27)):
-            c=lm[list(rr)].mean(0);sh(out,h,c,(.040,.032,.025),(0,.0045,.0010),0,1.15)
+            c=lm[list(rr)].mean(0);sh(out,h,c,(.040,.032,.025),(0,.0045,.0002),0,1.15)
         sh(out,h,lm[27],(.032,.032,.040),(0,.0035,0),0,1.10)
+        # Delicate nose while retaining the already correct vertical proportions.
         lm=out[visual.K].copy();nbase=lm[31:36].mean(0);tip=lm[30]
-        sc(out,h,nbase,(.028,.026,.028),(.84,1.0,.96),0,1.15);sh(out,h,nbase,(.030,.030,.032),(0,.0020,.0005),0,1.10);sh(out,h,tip,(.022,.026,.026),(0,.0010,.0003),0,1.05)
+        sc(out,h,nbase,(.028,.026,.028),(.82,1.0,.96),0,1.15);sh(out,h,nbase,(.030,.030,.032),(0,.0020,.0005),0,1.10);sh(out,h,tip,(.022,.026,.026),(0,.0010,.0003),0,1.05)
+        # Correct old profile where lips projected in front of nose.
         lm=out[visual.K].copy();mouth=lm[48:60].mean(0)
-        sh(out,h,mouth,(.052,.040,.038),(0,.0070,0),0,1.20);sc(out,h,mouth,(.044,.032,.025),(.96,1.0,.86),0,1.15)
+        sh(out,h,mouth,(.052,.040,.038),(0,.0070,0),0,1.20);sc(out,h,mouth,(.044,.032,.025),(.96,1.0,.88),0,1.15)
         sh(out,h,lm[51],(.025,.030,.025),(0,.0020,0),0,1.00);sh(out,h,lm[57],(.027,.030,.025),(0,.0015,.0006),0,1.00)
+        # Small soft apple-cheek support.
         lm=out[visual.K].copy()
-        for c in ((lm[40]+lm[31]+lm[48])/3,(lm[46]+lm[35]+lm[54])/3):sh(out,h,c,(.042,.040,.040),(0,-.0015,.0005),0,1.10)
+        for c in ((lm[40]+lm[31]+lm[48])/3,(lm[46]+lm[35]+lm[54])/3):sh(out,h,c,(.042,.040,.040),(0,-.0014,.0005),0,1.10)
+        # Smaller tucked ears.
         lm=out[visual.K].copy()
         for ii in (0,16):
             c=lm[ii];sc(out,h,c,(.034,.043,.055),(.78,.82,.78),0,1.12);sh(out,h,c,(.034,.043,.055),((.004 if c[0]<0 else -.004),.004,0),0,1.05)
+        # Hidden source eye components remain coherent only for topology/debug.
         lm=out[visual.K].copy()
         for ids in eye_groups:
             ids=np.asarray(ids,np.int64);c=out[ids].mean(0);target=lm[36:42].mean(0) if c[0]<0 else lm[42:48].mean(0)
@@ -66,7 +74,17 @@ def main():
 
     original_make=visual.ORIGINAL_MAKE_MATERIAL
     def better_material(name,color,metallic=0.0,roughness=.48,emission=None):
-        overrides={'AINA_Skin':((.78,.61,.58,1),0.0,.43,None),'AINA_EyeWhite':((.92,.95,.99,1),0.0,.24,None),'AINA_Iris':((.20,.48,.70,1),.02,.18,None),'AINA_Pupil':((.006,.010,.020,1),0.0,.20,None),'AINA_Hair_Silver':((.70,.75,.84,1),.08,.26,None),'AINA_Suit_Pearl':((.66,.72,.82,1),.14,.28,None),'AINA_Teeth':((.94,.92,.88,1),0.0,.30,None),'AINA_MouthInner':((.30,.06,.08,1),0.0,.46,None)}
+        overrides={
+          'AINA_Skin':((.78,.61,.58,1),0.0,.43,None),
+          'AINA_EyeWhite':((.92,.95,.99,1),0.0,.24,None),
+          'AINA_Iris':((.16,.36,.50,1),.02,.18,None),
+          'AINA_Pupil':((.006,.010,.020,1),0.0,.20,None),
+          'AINA_Hair_Silver':((.72,.77,.86,1),.08,.26,None),
+          'AINA_Suit_Pearl':((.66,.72,.82,1),.14,.28,None),
+          'AINA_Teeth':((.94,.92,.88,1),0.0,.30,None),
+          'AINA_MouthInner':((.30,.06,.08,1),0.0,.46,None),
+          'AINA_Lip':((.56,.19,.22,1),0.0,.38,None),
+        }
         if name in overrides:color,metallic,roughness,emission=overrides[name]
         return original_make(name,color,metallic,roughness,emission)
 
@@ -75,26 +93,34 @@ def main():
     visual.base.create_body=release.create_native_body
     visual.base.make_material=better_material
     eye_system.install(visual,release)
+    hair_system.install(visual)
 
     eye_face_factory=visual.base.create_face_objects
     def create_face_with_details(face_path,height,skin,eye_mat,teeth_mat,mouth_mat):
         result=eye_face_factory(face_path,height,skin,eye_mat,teeth_mat,mouth_mat)
-        head,eyes,mapped,groups,head_root,oral_roots,tongue_ids=result
-        lm=mapped[visual.K]
+        head,eyes,mapped,groups,head_root,oral_roots,tongue_ids=result;lm=mapped[visual.K]
         lash_mat=bpy.data.materials.get('AINA_Pupil') or better_material('AINA_Lash',(.008,.010,.018,1),0,.22)
-        brow_mat=better_material('AINA_Brow',(.20,.23,.30,1),0,.34)
+        brow_mat=better_material('AINA_Brow',(.18,.20,.26,1),0,.36)
+        lip_mat=better_material('AINA_Lip',(.56,.19,.22,1),0,.38);head.data.materials.append(lip_mat);lip_index=len(head.data.materials)-1
         def curve(name,pts,radius,mat):
             ob=visual.base.create_curve(name,[tuple(p) for p in pts],radius,mat);ob.parent=head;return ob
+        # Slim real 3D upper lashes and outer tails.
         for side,rr in [('R',range(36,42)),('L',range(42,48))]:
-            c=lm[list(rr)].mean(0);rx=.0167
-            # Monotonic x order prevents crossing/swirling Bezier lashes.
-            pts=[(c[0]-rx,-.01225,c[2]+(.0012 if side=='R' else .0003)),(c[0]-rx*.52,-.01245,c[2]+.0043),(c[0],-.01255,c[2]+.0056),(c[0]+rx*.52,-.01245,c[2]+.0043),(c[0]+rx,-.01225,c[2]+(.0003 if side=='R' else .0012))]
-            curve(f'AINA_Lash_{side}',pts,.00072,lash_mat)
-            outer=np.array(pts[0 if side=='R' else -1],float)
-            curve(f'AINA_LashTail_{side}',[outer,outer+np.array([-.004 if side=='R' else .004,-.0001,.0023])],.00058,lash_mat)
+            c=lm[list(rr)].mean(0);rx=.0155
+            pts=[(c[0]-rx,-.01185,c[2]+(.0009 if side=='R' else .0002)),(c[0]-rx*.52,-.01205,c[2]+.0037),(c[0],-.01215,c[2]+.0048),(c[0]+rx*.52,-.01205,c[2]+.0037),(c[0]+rx,-.01185,c[2]+(.0002 if side=='R' else .0009))]
+            curve(f'AINA_Lash_{side}',pts,.00060,lash_mat);outer=np.array(pts[0 if side=='R' else -1],float)
+            curve(f'AINA_LashTail_{side}',[outer,outer+np.array([-.0035 if side=='R' else .0035,-.0001,.0019])],.00048,lash_mat)
+        # Brows stay close to fitted landmarks instead of being artificially high.
         for side,ids in [('R',list(range(17,22))),('L',list(range(22,27)))]:
-            pts=[(float(p[0]),float(min(p[1]-.0020,-.0105)),float(p[2]+.0018)) for p in lm[ids]]
-            curve(f'AINA_Brow_{side}',pts,.00115,brow_mat)
+            pts=[(float(p[0]),float(min(p[1]-.0018,-.0103)),float(p[2]+.0004)) for p in lm[ids]];curve(f'AINA_Brow_{side}',pts,.00092,brow_mat)
+        # Real material assignment on deforming face polygons gives lips colour
+        # without a floating decal and automatically follows all 52 face shapes.
+        mc=lm[48:60].mean(0);rx_l=.0235;rz_l=.0083
+        for poly in head.data.polygons:
+            if poly.material_index!=0:continue
+            cen=np.mean([np.array(head.data.vertices[i].co) for i in poly.vertices],axis=0)
+            q=((cen[0]-mc[0])/rx_l)**2+((cen[2]-mc[2])/rz_l)**2
+            if q<1.0 and cen[1]<.005:poly.material_index=lip_index
         return result
     visual.base.create_face_objects=create_face_with_details
     visual.main()
