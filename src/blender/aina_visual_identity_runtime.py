@@ -15,6 +15,7 @@ def main():
     root=Path.cwd(); ensure_vrm_addon(root)
     import aina_final_vrm_release as release
     import aina_visual_identity_assembly as visual
+    import aina_visual_eye_system as eye_system
 
     def already_enabled(_root:Path):
         import bpy
@@ -66,15 +67,20 @@ def main():
         for ii in (0,16):
             c=lm[ii];sc(out,h,c,(.032,.040,.052),(.70,.80,.72),0,1.15);sh(out,h,c,(.034,.042,.055),((.006 if c[0]<0 else -.006),.003,0),0,1.05)
 
+        # Original FaceVerse eye components are not used for final visual eyes,
+        # but keep their coordinates coherent for topology/debug exports.
         lm=out[visual.K].copy()
         for ids in eye_groups:
             ids=np.asarray(ids,np.int64);c=out[ids].mean(0);target=lm[36:42].mean(0) if c[0]<0 else lm[42:48].mean(0)
-            p=out[ids].copy();p+=np.array([target[0]-c[0],.0050,target[2]-c[2]]);c2=p.mean(0);p=c2+(p-c2)*np.array([1.08,1.02,1.04]);out[ids]=p
+            p=out[ids].copy();p+=np.array([target[0]-c[0],.0090,target[2]-c[2]]);c2=p.mean(0);p=c2+(p-c2)*np.array([1.04,1.00,.94]);out[ids]=p
         return out
 
     visual.polish_real_face=corrected_polish
     visual.base.enable_addons=already_enabled
     visual.base.create_body=release.create_native_body
+    # Replace protruding FaceVerse eyeballs with the real 3D almond eye system,
+    # including blink/wide/squint/look shape-key bindings.
+    eye_system.install(visual,release)
     visual.main()
 
 if __name__=='__main__': main()
