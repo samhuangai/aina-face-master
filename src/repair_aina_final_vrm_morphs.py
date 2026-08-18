@@ -110,7 +110,7 @@ def append_aligned(buf:bytearray,data:bytes):
 def sparse_vec3(doc,buf,arr):
     arr=np.asarray(arr,np.float32)
     nz=np.flatnonzero(np.any(arr!=0.0,axis=1))
-    acc={'componentType':5126,'count':int(len(arr)),'type':'VEC3'}
+    acc={'componentType':5126,'count':int(len(arr)),'type':'VEC3','min':[float(x) for x in arr.min(axis=0)],'max':[float(x) for x in arr.max(axis=0)]}
     if len(nz):
         inds=nz.astype(np.uint32); vals=np.ascontiguousarray(arr[nz],dtype=np.float32)
         ioff,ilen=append_aligned(buf,inds.tobytes())
