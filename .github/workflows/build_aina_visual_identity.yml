@@ -22,6 +22,8 @@ jobs:
   visual:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
     steps:
       - uses: actions/checkout@v4
 
@@ -41,9 +43,11 @@ jobs:
           test -s diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
           test -s diag/output_locked/AINA_FACEVERSE_v15.5_REPORT.json
 
-      - name: Install Blender 4.5.12 LTS and VRM Addon v4.5.0
+      - name: Install Blender 4.5.12 LTS and render runtime
         run: |
           set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libgl1-mesa-dri libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
           curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
           mkdir blender
           tar -xf blender.tar.xz -C blender --strip-components=1
@@ -105,18 +109,9 @@ jobs:
           from pathlib import Path
           root=Path('output_visual'); log=Path('qa/AINA_VISUAL_BLENDER.log')
           previews=sorted(p.name for p in (root/'Preview').glob('AINA_REAL_*.png')) if (root/'Preview').exists() else []
-          q=root/'QA'/'AINA_VISUAL_IDENTITY_QA.json'
-          exitf=Path('qa/AINA_VISUAL_BLENDER_EXIT.txt')
+          q=root/'QA'/'AINA_VISUAL_IDENTITY_QA.json'; exitf=Path('qa/AINA_VISUAL_BLENDER_EXIT.txt')
           code=int(exitf.read_text().strip()) if exitf.exists() else -1
-          marker={
-            'source_commit':os.environ.get('VERIFY_COMMIT',''), 'run_id':os.environ.get('GITHUB_RUN_ID',''),
-            'stage':'visual_build_passed' if code==0 and q.exists() else 'visual_build_failed',
-            'pass':code==0 and q.exists() and len(previews)>=6,
-            'blender_exit':code, 'preview_count':len(previews), 'preview_files':previews,
-            'master_bytes':(root/'AINA_MASTER.blend').stat().st_size if (root/'AINA_MASTER.blend').exists() else 0,
-            'vrm_candidate_bytes':(root/'AINA.vrm').stat().st_size if (root/'AINA.vrm').exists() else 0,
-            'log_tail':'\n'.join(log.read_text(errors='replace').splitlines()[-80:]) if log.exists() else ''
-          }
+          marker={'source_commit':os.environ.get('VERIFY_COMMIT',''),'run_id':os.environ.get('GITHUB_RUN_ID',''),'stage':'visual_build_passed' if code==0 and q.exists() else 'visual_build_failed','pass':code==0 and q.exists() and len(previews)>=6,'blender_exit':code,'preview_count':len(previews),'preview_files':previews,'master_bytes':(root/'AINA_MASTER.blend').stat().st_size if (root/'AINA_MASTER.blend').exists() else 0,'vrm_candidate_bytes':(root/'AINA.vrm').stat().st_size if (root/'AINA.vrm').exists() else 0,'log_tail':'\n'.join(log.read_text(errors='replace').splitlines()[-80:]) if log.exists() else ''}
           Path('qa').mkdir(exist_ok=True); Path('qa/AINA_VISUAL_BUILD_STATUS.json').write_text(json.dumps(marker,indent=2),encoding='utf-8'); print(json.dumps(marker,indent=2))
           PY
           git config user.name "github-actions[bot]"
