@@ -1,5 +1,6 @@
 name: Build AINA Real 3D Visual Identity
 
+# Real-mesh visual lock build. No new reference art is generated.
 on:
   push:
     branches: [production/aina-visual-lock]
