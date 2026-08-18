@@ -1,0 +1,12 @@
+{
+  "source_commit": "af826b5ca1913d23b5b4112ab392e9694c518b21",
+  "run_id": "32088308836",
+  "stage": "visual_build_failed",
+  "pass": false,
+  "blender_exit": 134,
+  "preview_count": 0,
+  "preview_files": [],
+  "master_bytes": 20443547,
+  "vrm_candidate_bytes": 0,
+  "log_tail": "[AINA_FINAL] VRM Addon enabled through Blender preferences: /home/runner/.config/blender/4.5/scripts/addons/io_scene_vrm\n[AINA_FINAL] Blender-native production body: 3756 vertices / 7016 triangles / 19 weighted groups\n[AINA_FINAL] Removing 21 MPFB head vertices above z=1.505\nCouldn't open libEGL.so.1: libEGL.so.1: cannot open shared object file: No such file or directory"
+}
