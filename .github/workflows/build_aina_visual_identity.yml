@@ -1,0 +1,89 @@
+name: Build AINA Real 3D Visual Identity
+
+on:
+  push:
+    branches: [production/aina-visual-lock]
+    paths:
+      - src/blender/aina_visual_identity_assembly.py
+      - src/blender/aina_visual_identity_runtime.py
+      - .github/workflows/build_aina_visual_identity.yml
+  workflow_dispatch:
+
+concurrency:
+  group: aina-real-3d-visual-identity
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  visual:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download existing locked v15.5 real mesh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o diag.zip
+          unzip -q diag.zip -d diag
+          test -s diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+          test -s diag/output_locked/AINA_FACEVERSE_v15.5_REPORT.json
+
+      - name: Install Blender 4.5.12 LTS and VRM Addon v4.5.0
+        run: |
+          set -euo pipefail
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+          git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
+          ./blender/blender --version
+
+      - name: Sculpt and assemble the actual real 3D model
+        run: |
+          set -euo pipefail
+          "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_visual_identity_runtime.py -- \
+            --face diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
+            --identity-report diag/output_locked/AINA_FACEVERSE_v15.5_REPORT.json \
+            --out output_visual
+          test -s output_visual/AINA_MASTER.blend
+          test -s output_visual/QA/AINA_VISUAL_IDENTITY_QA.json
+          test -s output_visual/Preview/AINA_REAL_NEUTRAL_FRONT.png
+          test -s output_visual/Preview/AINA_REAL_NEUTRAL_3Q.png
+          test -s output_visual/Preview/AINA_REAL_HAPPY_FRONT.png
+          test -s output_visual/Preview/AINA_REAL_SURPRISED_FRONT.png
+          test -s output_visual/Preview/AINA_REAL_BLINK_FRONT.png
+          test -s output_visual/Preview/AINA_REAL_AA_FRONT.png
+
+      - name: Record actual model geometry metrics
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, pathlib
+          q=pathlib.Path('output_visual/QA/AINA_VISUAL_IDENTITY_QA.json')
+          d=json.loads(q.read_text())
+          d['build_pass']=True
+          d['actual_preview_files']=sorted(p.name for p in pathlib.Path('output_visual/Preview').glob('AINA_REAL_*.png'))
+          d['master_bytes']=pathlib.Path('output_visual/AINA_MASTER.blend').stat().st_size
+          d['vrm_candidate_bytes']=pathlib.Path('output_visual/AINA.vrm').stat().st_size if pathlib.Path('output_visual/AINA.vrm').exists() else 0
+          q.write_text(json.dumps(d,indent=2),encoding='utf-8')
+          print(json.dumps(d,indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AINA-REAL-3D-VISUAL-IDENTITY
+          path: |
+            output_visual/AINA_MASTER.blend
+            output_visual/AINA.vrm
+            output_visual/Preview/**
+            output_visual/QA/**
+          if-no-files-found: error
+          retention-days: 14
