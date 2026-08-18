@@ -1,11 +1,14 @@
 {
-  "source_commit": "053cf0795ad25d7d5502dbfc5652de6d0a32419f",
+  "source_commit": "9a98a9a75fd1438320658668665818bb039b137e",
+  "run_id": "32086633589",
   "pass": false,
+  "stage": "restore_running",
   "shape_controls_found": 0,
   "shape_controls_expected": 52,
   "presets_verified": 0,
   "presets_expected": 18,
   "total_preset_morph_binds": 0,
   "expected_total_preset_morph_binds": 43,
-  "binary_pass": false
+  "binary_pass": false,
+  "restore_log_tail": "Traceback (most recent call last):\n  File \"/home/runner/work/aina-face-master/aina-face-master/src/repair_aina_final_vrm_morphs.py\", line 244, in <module>\n    main()\n  File \"/home/runner/work/aina-face-master/aina-face-master/src/repair_aina_final_vrm_morphs.py\", line 181, in main\n    raise RuntimeError(f'Primitive {pi}: duplicate vertex has divergent NORMAL morph delta')\nRuntimeError: Primitive 0: duplicate vertex has divergent NORMAL morph delta\n"
 }
