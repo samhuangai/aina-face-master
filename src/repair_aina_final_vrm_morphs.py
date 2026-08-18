@@ -169,19 +169,19 @@ def main():
         if missing: raise RuntimeError(f'Primitive {pi}: {len(missing)} final vertices cannot map to probe')
         mapping=np.asarray(mapping,np.int64)
 
-        for candidates in lookup.values():
-            if len(candidates)<2: continue
-            for target in rp['targets']:
-                for sem in ('POSITION','NORMAL'):
-                    x=accessor(rdoc,rbin,target[sem])[candidates]
-                    if np.any(x!=x[0]):
-                        raise RuntimeError(f'Primitive {pi}: duplicate vertex has divergent {sem} morph delta')
-
+        duplicate_groups=[c for c in lookup.values() if len(c)>1]
         targets=[]; pos_sparse=[]; normal_sparse=[]
         for target in rp['targets']:
+            pfull=accessor(rdoc,rbin,target['POSITION']).astype(np.float32)
+            nfull=accessor(rdoc,rbin,target['NORMAL']).astype(np.float32)
+            for candidates in duplicate_groups:
+                if np.any(pfull[candidates]!=pfull[candidates[0]]):
+                    raise RuntimeError(f'Primitive {pi}: duplicate vertex has divergent POSITION morph delta')
+                if np.any(nfull[candidates]!=nfull[candidates[0]]):
+                    raise RuntimeError(f'Primitive {pi}: duplicate vertex has divergent NORMAL morph delta')
             out={}
-            pidx,pnz=sparse_vec3(doc,buf,accessor(rdoc,rbin,target['POSITION']).astype(np.float32)[mapping])
-            nidx,nnz=sparse_vec3(doc,buf,accessor(rdoc,rbin,target['NORMAL']).astype(np.float32)[mapping])
+            pidx,pnz=sparse_vec3(doc,buf,pfull[mapping])
+            nidx,nnz=sparse_vec3(doc,buf,nfull[mapping])
             out['POSITION']=pidx; out['NORMAL']=nidx
             pos_sparse.append(pnz); normal_sparse.append(nnz); targets.append(out)
         fp['targets']=targets
