@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 jobs:
@@ -76,3 +76,61 @@ jobs:
             verified_final/QA/**
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Publish exact reimport verification marker
+        if: always()
+        env:
+          VERIFY_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          marker={
+              'source_commit': os.environ.get('VERIFY_COMMIT',''),
+              'pass': False,
+              'shape_controls_found': 0,
+              'shape_controls_expected': 52,
+              'presets_verified': 0,
+              'presets_expected': 18,
+              'total_preset_morph_binds': 0,
+              'expected_total_preset_morph_binds': 43,
+              'binary_pass': False,
+          }
+          b=Path('verified_final/QA/AINA_VRM_BINARY_MORPH_QA.json')
+          r=Path('verified_final/QA/AINA_VRM_REIMPORT_QA.json')
+          if b.exists():
+              bd=json.loads(b.read_text())
+              marker['binary_pass']=bool(bd.get('binary_pass'))
+              marker['binary_shape_controls']=bd.get('shape_controls',0)
+              marker['binary_preset_count']=bd.get('preset_count',0)
+              marker['binary_total_preset_morph_binds']=bd.get('total_preset_morph_binds',0)
+              marker['vrm_bytes']=bd.get('vrm_bytes',0)
+          if r.exists():
+              rd=json.loads(r.read_text())
+              marker['reimport_pass']=bool(rd.get('pass'))
+              marker['shape_controls_found']=rd.get('shape_controls_found',0)
+              marker['presets_verified']=rd.get('presets_verified',0)
+              marker['total_preset_morph_binds']=rd.get('total_preset_morph_binds',0)
+              marker['preset_binding_mismatches']=rd.get('preset_binding_mismatches',{})
+              marker['missing_shape_controls']=rd.get('missing_shape_controls',[])
+          marker['pass']=(
+              marker.get('binary_pass') is True and
+              marker.get('reimport_pass') is True and
+              marker.get('shape_controls_found')==52 and
+              marker.get('presets_verified')==18 and
+              marker.get('total_preset_morph_binds')==43
+          )
+          Path('qa').mkdir(exist_ok=True)
+          Path('qa/AINA_FINAL_REIMPORT_VERIFIED.json').write_text(
+              json.dumps(marker,indent=2),encoding='utf-8'
+          )
+          print(json.dumps(marker,indent=2))
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add qa/AINA_FINAL_REIMPORT_VERIFIED.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Record AINA final VRM reimport verification"
+            git push origin HEAD:build/aina-v10-first-fit
+          fi
