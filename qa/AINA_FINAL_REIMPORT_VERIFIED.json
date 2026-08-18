@@ -1,0 +1,11 @@
+{
+  "source_commit": "20f4ed030f7bce76ae2f36d3a9da3539cf29a36b",
+  "pass": false,
+  "shape_controls_found": 0,
+  "shape_controls_expected": 52,
+  "presets_verified": 0,
+  "presets_expected": 18,
+  "total_preset_morph_binds": 0,
+  "expected_total_preset_morph_binds": 43,
+  "binary_pass": false
+}
