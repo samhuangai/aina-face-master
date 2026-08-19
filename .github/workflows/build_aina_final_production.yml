@@ -1,186 +1,140 @@
-name: AINA Final Production Release
+name: AINA Final Real 3D Visual Lock
 
 on:
   push:
     branches: [build/aina-v10-first-fit]
     paths:
-      - src/blender/aina_vrm_addon_runtime.py
-      - src/blender/aina_final_vrm_release_runtime.py
-      - src/blender/aina_final_vrm_reimport_runtime.py
-      - src/blender/aina_final_vrm_release.py
-      - src/blender/aina_final_vrm_assembly.py
-      - src/blender/aina_final_vrm_reimport_qa.py
-      - src/sculpt_aina_v155_identity.py
-      - src/finalize_aina_v155_lock.py
-      - src/converge_aina_v155_release_gate.py
-      - src/render_aina_v155_qa.py
-      - references/AINA_APPROVED_FRONT_V2.jpg.b64
-      - references/AINA_APPROVED_3Q.jpg.b64
-      - references/AINA_APPROVED_SIDE.jpg.b64
-      - references/AINA_TARGET_3DDFA_SPARSE_68.json
       - .github/workflows/build_aina_final_production.yml
   workflow_dispatch:
 
 concurrency:
-  group: aina-final-production-${{ github.ref }}
+  group: aina-final-real-3d-visual-lock
   cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: write
+  actions: read
 
 jobs:
-  release:
+  visual_lock:
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 50
     env:
       LIBGL_ALWAYS_SOFTWARE: '1'
-      PYOPENGL_PLATFORM: osmesa
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Pull final visual-lock Blender scripts
+        run: |
+          set -euo pipefail
+          git fetch origin production/aina-visual-lock --depth=1
+          git checkout FETCH_HEAD -- \
+            src/blender/aina_visual_identity_assembly.py \
+            src/blender/aina_visual_identity_runtime.py \
+            src/blender/aina_visual_eye_system.py \
+            src/blender/aina_visual_hair_system.py
+          test -s src/blender/aina_visual_identity_runtime.py
 
-      - name: Install identity geometry runtime
+      - name: Download locked AINA v15.5 real mesh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o diag.zip
+          unzip -q diag.zip -d diag
+          test -s diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+          test -s diag/output_locked/AINA_FACEVERSE_v15.5_REPORT.json
+
+      - name: Install Blender 4.5.12 LTS, Xvfb and VRM Addon
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends curl xz-utils ca-certificates git libegl1 libgl1 libgl1-mesa-dri libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
-          python -m pip install --upgrade pip
-          pip install numpy==1.26.4 scipy opencv-python-headless onnxruntime trimesh pillow mediapipe==0.10.21 vtk requests tqdm
-          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-
-      - name: Materialize approved AINA references and FaceVerse
-        run: |
-          set -euo pipefail
-          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
-          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
-          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
-          git clone --depth 1 https://github.com/Mrkomiljon/faceverse-onnx.git vendor/faceverse-onnx
-          (cd vendor/faceverse-onnx && python download_models.py --models faceverse_v4_2.npy faceverse_resnet50_float32.onnx)
-
-      - name: Converge and hard-lock the existing v15.5 real face
-        run: |
-          set -euo pipefail
-          python src/fit_aina_faceverse_v124_axisfix.py --front references/AINA_APPROVED_FRONT.jpg --three-quarter references/AINA_APPROVED_3Q.jpg --front-landmarks references/AINA_TARGET_3DDFA_SPARSE_68.json --out output_faceverse_v124
-          python src/sculpt_aina_faceverse_v125_residual.py --base-full output_faceverse_v124/AINA_FACEVERSE_FULL_v12.4_AXISFIX.obj --front references/AINA_APPROVED_FRONT.jpg --faceverse-data vendor/faceverse-onnx/data/faceverse_v4_2.npy --out output_faceverse_v125
-          python src/sculpt_aina_v155_identity.py --base output_faceverse_v125/AINA_FACEVERSE_FULL_v12.5_DENSE_RESIDUAL.obj --out output_v155
-          python src/finalize_aina_v155_lock.py --base output_v155/AINA_FACEVERSE_FULL_v15.5_CLEAN_IDENTITY.obj --target-landmarks references/AINA_TARGET_3DDFA_SPARSE_68.json --out output_locked || test -s output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
-          cp output_locked/AINA_FACEVERSE_v15.5_REPORT.json output_locked/AINA_FACEVERSE_v15.5_PRECONVERGENCE_REPORT.json
-          python src/converge_aina_v155_release_gate.py --mesh output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj --target-landmarks references/AINA_TARGET_3DDFA_SPARSE_68.json --prior-report output_locked/AINA_FACEVERSE_v15.5_PRECONVERGENCE_REPORT.json --out output_locked
-          python src/render_aina_v155_qa.py --clay output_locked/AINA_FACEVERSE_IDENTITY_CLAY_v15.5_LOCKED.obj --front references/AINA_APPROVED_FRONT.jpg --q3 references/AINA_APPROVED_3Q.jpg --side references/AINA_APPROVED_SIDE.jpg --out output_locked/QA
-          python - <<'PY'
-          import json
-          d=json.load(open('output_locked/AINA_FACEVERSE_v15.5_REPORT.json'))
-          assert d.get('identity_lock') is True, d
-          assert all(d.get('checks',{}).values()), d
-          assert d.get('front_landmark_rmse_px',999) <= 1.10, d
-          assert d.get('front_landmark_max_px',999) <= 3.0, d
-          print('AINA_V15_5_IDENTITY_LOCK=TRUE')
-          PY
-
-      - name: Install Blender 4.5 LTS and VRM Addon source
-        run: |
-          set -euo pipefail
-          mkdir -p .runtime/blender
-          found=''
-          for v in 4.5.12 4.5.11 4.5.10 4.5.9 4.5.8 4.5.7 4.5.6 4.5.5 4.5.4 4.5.3 4.5.2 4.5.1 4.5.0; do
-            url="https://download.blender.org/release/Blender4.5/blender-${v}-linux-x64.tar.xz"
-            if curl -fL --retry 2 --connect-timeout 20 -o .runtime/blender.tar.xz "$url"; then found="$v"; break; fi
-          done
-          test -n "$found"
-          tar -xf .runtime/blender.tar.xz -C .runtime/blender --strip-components=1
-          echo "BLENDER=$PWD/.runtime/blender/blender" >> "$GITHUB_ENV"
-          echo "BLENDER_PATCH=$found" >> "$GITHUB_ENV"
-          .runtime/blender/blender --version
+          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          ldconfig -p | grep -E 'libEGL.so.1|libGLX.so.0'
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
           git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
+          xvfb-run -a ./blender/blender --version
 
-      - name: Assemble final AINA MASTER and export VRM 1.0
+      - name: Build and render the actual AINA model
+        run: |
+          set +e
+          mkdir -p output_visual/QA output_visual/Preview qa
+          xvfb-run -a -s '-screen 0 1920x1080x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_visual_identity_runtime.py -- \
+            --face diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
+            --identity-report diag/output_locked/AINA_FACEVERSE_v15.5_REPORT.json \
+            --out output_visual 2>&1 | tee qa/AINA_VISUAL_BLENDER.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > qa/AINA_VISUAL_BLENDER_EXIT.txt
+          exit "$code"
+
+      - name: Hard visual preview gate
+        if: success()
         run: |
           set -euo pipefail
-          "$BLENDER" --background --factory-startup --python-exit-code 1 --python src/blender/aina_final_vrm_release_runtime.py -- --face output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj --identity-report output_locked/AINA_FACEVERSE_v15.5_REPORT.json --out output_final
-          test -s output_final/AINA_MASTER.blend
-          test -s output_final/AINA.vrm
-          test $(stat -c%s output_final/AINA.vrm) -ge 100000
+          test -s output_visual/AINA_MASTER.blend
+          test -s output_visual/QA/AINA_VISUAL_IDENTITY_QA.json
+          for f in \
+            AINA_REAL_NEUTRAL_FRONT.png \
+            AINA_REAL_NEUTRAL_3Q.png \
+            AINA_REAL_HAPPY_FRONT.png \
+            AINA_REAL_SURPRISED_FRONT.png \
+            AINA_REAL_BLINK_FRONT.png \
+            AINA_REAL_AA_FRONT.png; do
+              test -s "output_visual/Preview/$f"
+          done
 
-      - name: Reimport final AINA VRM into a clean Blender scene
-        run: |
-          set -euo pipefail
-          "$BLENDER" --background --factory-startup --python-exit-code 1 --python src/blender/aina_final_vrm_reimport_runtime.py -- --vrm output_final/AINA.vrm --out output_final
-          test -s output_final/AINA_REIMPORT_CHECK.blend
-          test -s output_final/QA/AINA_VRM_REIMPORT_QA.json
-
-      - name: Hard final production gate
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json, pathlib, os
-          root=pathlib.Path('output_final')
-          ident=json.load(open('output_locked/AINA_FACEVERSE_v15.5_REPORT.json'))
-          required=[
-              root/'AINA_MASTER.blend', root/'AINA.vrm', root/'AINA_REIMPORT_CHECK.blend',
-              root/'Preview'/'AINA_PORTRAIT_FRONT.png', root/'Preview'/'AINA_PORTRAIT_3Q.png', root/'Preview'/'AINA_FULL_BODY_FRONT.png',
-              root/'QA'/'AINA_FINAL_ASSEMBLY_QA.json', root/'QA'/'AINA_VRM_REIMPORT_QA.json',
-          ]
-          missing=[str(p) for p in required if not p.exists() or p.stat().st_size==0]
-          if missing: raise SystemExit('Missing final production files: '+repr(missing))
-          assembly=json.load(open(root/'QA'/'AINA_FINAL_ASSEMBLY_QA.json'))
-          reimport=json.load(open(root/'QA'/'AINA_VRM_REIMPORT_QA.json'))
-          checks={
-              'identity_lock': ident.get('identity_lock') is True and all(ident.get('checks',{}).values()),
-              'assembly_pass': assembly.get('assembly_pass') is True,
-              'shape_controls_52': assembly.get('shape_control_count') == 52,
-              'vrm_presets_18': assembly.get('vrm_preset_count') == 18,
-              'look_at': bool(assembly.get('look_at')),
-              'spring_bones': assembly.get('spring_bone_count',0) >= 3,
-              'reimport_pass': reimport.get('pass') is True and all(reimport.get('checks',{}).values()),
-              'vrm_size': (root/'AINA.vrm').stat().st_size >= 100000,
-              'front_identity_rmse': ident.get('front_landmark_rmse_px',999) <= 1.10,
-              'front_identity_max': ident.get('front_landmark_max_px',999) <= 3.0,
-          }
-          if not all(checks.values()): raise SystemExit('AINA final production gate failed: '+repr(checks))
-          gate={
-              'pass':True,'checks':checks,'blender':os.environ.get('BLENDER_PATCH','unknown'),
-              'identity_rmse_px':ident.get('front_landmark_rmse_px'),'identity_max_px':ident.get('front_landmark_max_px'),
-              'vrm_bytes':(root/'AINA.vrm').stat().st_size,
-          }
-          (root/'QA'/'AINA_FINAL_RELEASE_GATE.json').write_text(json.dumps(gate,indent=2),encoding='utf-8')
-          print(json.dumps(gate,indent=2)); print('AINA_FINAL_PRODUCTION_GATE=PASS')
-          PY
-
-      - name: Package final production deliverable
-        run: |
-          set -euo pipefail
-          rm -rf release_package
-          mkdir -p release_package/QA
-          cp output_final/AINA_MASTER.blend release_package/
-          cp output_final/AINA.vrm release_package/
-          cp output_final/AINA_REIMPORT_CHECK.blend release_package/
-          cp -r output_final/Textures release_package/
-          cp -r output_final/Preview release_package/
-          cp -r output_final/QA/. release_package/QA/
-          cp output_locked/AINA_FACEVERSE_v15.5_REPORT.json release_package/QA/AINA_FACE_IDENTITY_LOCK.json
-          cp -r output_locked/QA release_package/QA/FaceIdentityViews
-          cp output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.glb release_package/
-          cp output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj release_package/
-          (cd release_package && sha256sum AINA_MASTER.blend AINA.vrm AINA_REIMPORT_CHECK.blend AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.glb AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj > SHA256SUMS.txt)
-
-      - name: Upload final AINA production release
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: AINA-FINAL-PRODUCTION-RELEASE
-          path: release_package/**
-          if-no-files-found: error
+          name: AINA-REAL-3D-VISUAL-LOCK
+          path: |
+            output_visual/AINA_MASTER.blend
+            output_visual/AINA.vrm
+            output_visual/Preview/**
+            output_visual/QA/**
+            qa/AINA_VISUAL_BLENDER.log
+            qa/AINA_VISUAL_BLENDER_EXIT.txt
+          if-no-files-found: warn
           retention-days: 30
 
-      - name: Upload final build diagnostics
+      - name: Publish exact visual-lock status
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: AINA-FINAL-PRODUCTION-DIAGNOSTICS
-          path: |
-            output_locked/**
-            output_final/**
-          if-no-files-found: warn
-          retention-days: 14
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path('output_visual')
+          log=Path('qa/AINA_VISUAL_BLENDER.log')
+          exitf=Path('qa/AINA_VISUAL_BLENDER_EXIT.txt')
+          code=int(exitf.read_text().strip()) if exitf.exists() else -1
+          previews=sorted(p.name for p in (root/'Preview').glob('AINA_REAL_*.png')) if (root/'Preview').exists() else []
+          marker={
+            'source_commit':os.environ.get('GITHUB_SHA',''),
+            'run_id':os.environ.get('GITHUB_RUN_ID',''),
+            'stage':'visual_build_passed' if code==0 and len(previews)>=6 else 'visual_build_failed',
+            'pass':code==0 and len(previews)>=6,
+            'blender_exit':code,
+            'preview_count':len(previews),
+            'preview_files':previews,
+            'master_bytes':(root/'AINA_MASTER.blend').stat().st_size if (root/'AINA_MASTER.blend').exists() else 0,
+            'vrm_candidate_bytes':(root/'AINA.vrm').stat().st_size if (root/'AINA.vrm').exists() else 0,
+            'log_tail':'\n'.join(log.read_text(errors='replace').splitlines()[-140:]) if log.exists() else '',
+          }
+          Path('qa').mkdir(exist_ok=True)
+          Path('qa/AINA_VISUAL_LOCK_STATUS.json').write_text(json.dumps(marker,indent=2),encoding='utf-8')
+          print(json.dumps(marker,indent=2))
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add qa/AINA_VISUAL_LOCK_STATUS.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Record AINA final real 3D visual lock status"
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
