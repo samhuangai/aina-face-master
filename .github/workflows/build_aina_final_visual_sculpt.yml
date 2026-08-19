@@ -1,0 +1,103 @@
+name: AINA Final Real 3D Mesh Sculpt
+
+on:
+  push:
+    branches: [build/aina-v10-first-fit]
+    paths:
+      - .github/workflows/build_aina_final_visual_sculpt.yml
+  workflow_dispatch:
+
+concurrency:
+  group: aina-final-real-mesh-sculpt
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  sculpt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull production visual runtime and final sculpt patch
+        run: |
+          set -euo pipefail
+          git fetch origin production/aina-visual-lock --depth=1
+          git checkout FETCH_HEAD -- \
+            src/blender/aina_visual_identity_assembly.py \
+            src/blender/aina_visual_identity_runtime.py \
+            src/blender/aina_visual_eye_system.py \
+            src/blender/aina_visual_hair_system.py \
+            src/blender/aina_final_vrm_assembly.py \
+            src/blender/aina_final_vrm_release.py \
+            src/blender/aina_vrm_addon_runtime.py \
+            src/blender/aina_visual_identity_final_sculpt.py
+          test -s src/blender/aina_visual_identity_final_sculpt.py
+
+      - name: Download locked v15.5 real mesh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o diag.zip
+          unzip -q diag.zip -d diag
+          test -s diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+          test -s diag/output_locked/AINA_FACEVERSE_v15.5_REPORT.json
+
+      - name: Install Blender 4.5.12 LTS, Xvfb and VRM Addon
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+          git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
+          xvfb-run -a ./blender/blender --version
+
+      - name: Build the real AINA mesh with final sculpt pass
+        run: |
+          set -euo pipefail
+          mkdir -p output_visual/QA output_visual/Preview qa
+          xvfb-run -a -s '-screen 0 1920x1080x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_visual_identity_final_sculpt.py -- \
+            --face diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
+            --identity-report diag/output_locked/AINA_FACEVERSE_v15.5_REPORT.json \
+            --out output_visual 2>&1 | tee qa/AINA_FINAL_MESH_SCULPT.log
+
+      - name: Hard real-model visual gate
+        run: |
+          set -euo pipefail
+          test -s output_visual/AINA_MASTER.blend
+          test -s output_visual/QA/AINA_VISUAL_IDENTITY_QA.json
+          for f in \
+            AINA_REAL_NEUTRAL_FRONT.png \
+            AINA_REAL_NEUTRAL_3Q.png \
+            AINA_REAL_HAPPY_FRONT.png \
+            AINA_REAL_SURPRISED_FRONT.png \
+            AINA_REAL_BLINK_FRONT.png \
+            AINA_REAL_AA_FRONT.png; do
+              test -s "output_visual/Preview/$f"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-FINAL-REAL-MESH-SCULPT
+          path: |
+            output_visual/AINA_MASTER.blend
+            output_visual/AINA.vrm
+            output_visual/Preview/**
+            output_visual/QA/**
+            qa/AINA_FINAL_MESH_SCULPT.log
+          if-no-files-found: warn
+          retention-days: 30
