@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Pull production Blender code
+      - name: Pull final production Blender code
         run: |
           set -euo pipefail
           git fetch --depth=1 origin \
@@ -33,20 +33,25 @@ jobs:
           git checkout origin/build/aina-v10-first-fit -- src/blender
           git checkout origin/production/aina-visual-lock -- \
             src/blender/aina_visual_identity_assembly.py \
-            src/blender/aina_visual_identity_runtime.py \
+            src/blender/aina_visual_identity_final_runtime.py \
             src/blender/aina_visual_eye_system.py \
             src/blender/aina_visual_hair_system.py
 
-      - name: Patch runtime for fast neutral-only inspection
+      - name: Patch final runtime for neutral-only fast inspection
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p=Path('src/blender/aina_visual_identity_assembly.py')
+          import re
+          p=Path('src/blender/aina_visual_identity_final_runtime.py')
           s=p.read_text()
-          s=s.replace("def render(name,loc,target,vals,res=(768,768)):","def render(name,loc,target,vals,res=(448,448)):")
-          old="cases={'AINA_REAL_NEUTRAL_FRONT.png':{},'AINA_REAL_HAPPY_FRONT.png':{'mouthSmileLeft':.82,'mouthSmileRight':.82,'cheekSquintLeft':.30,'cheekSquintRight':.30},'AINA_REAL_SURPRISED_FRONT.png':{'browInnerUp':.55,'eyeWideLeft':.86,'eyeWideRight':.86,'jawOpen':.58},'AINA_REAL_BLINK_FRONT.png':{'eyeBlinkLeft':1.0,'eyeBlinkRight':1.0},'AINA_REAL_AA_FRONT.png':{'jawOpen':.72,'mouthFunnel':.20}}"
-          s=s.replace(old,"cases={'AINA_REAL_NEUTRAL_FRONT.png':{}}")
-          s=s.replace("    render('AINA_REAL_FULL_BODY_FRONT.png',(0,-4.7,1.05),(0,0,.98),{},(1024,1536));_clear(head)","    _clear(head)")
+          s=s.replace('def render(name, loc, target, vals, res=(768,768)):', 'def render(name, loc, target, vals, res=(448,448)):')
+          s=re.sub(
+              r'        cases = \{.*?        for name, vals in cases.items\(\):',
+              '        cases = {"AINA_REAL_NEUTRAL_FRONT.png": {}}\n        for name, vals in cases.items():',
+              s,
+              flags=re.S,
+          )
+          s=s.replace('        render("AINA_REAL_FULL_BODY_FRONT.png", (0,-4.7,1.05), (0,0,.98), {}, (1024,1536))\n', '')
           p.write_text(s)
 
           p=Path('src/blender/aina_final_vrm_assembly.py')
@@ -57,7 +62,7 @@ jobs:
           p.write_text(s.replace(needle,repl))
           PY
 
-      - name: Download locked AINA mesh
+      - name: Download locked AINA real mesh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -66,6 +71,7 @@ jobs:
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o diag.zip
           unzip -q diag.zip -d diag
           test -s diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+          test -s diag/output_locked/AINA_FACEVERSE_v15.5_REPORT.json
 
       - name: Install Blender and Xvfb
         run: |
@@ -79,11 +85,11 @@ jobs:
           echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
           git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
 
-      - name: Build actual model and render neutral front plus 3Q
+      - name: Build actual final-convergence mesh and render neutral front plus 3Q
         run: |
           set -euo pipefail
           xvfb-run -a -s '-screen 0 1280x720x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
-            --python src/blender/aina_visual_identity_runtime.py -- \
+            --python src/blender/aina_visual_identity_final_runtime.py -- \
             --face diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
             --identity-report diag/output_locked/AINA_FACEVERSE_v15.5_REPORT.json \
             --out output_quick
