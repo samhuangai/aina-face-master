@@ -34,12 +34,10 @@ jobs:
           git checkout origin/production/aina-visual-lock -- \
             src/blender/aina_visual_identity_assembly.py \
             src/blender/aina_visual_identity_runtime.py \
+            src/blender/aina_visual_identity_final_runtime.py \
             src/blender/aina_visual_eye_system.py \
             src/blender/aina_visual_hair_system.py
-          test -s src/blender/aina_final_vrm_assembly.py
-          test -s src/blender/aina_final_vrm_release.py
-          test -s src/blender/aina_vrm_addon_runtime.py
-          test -s src/blender/aina_visual_identity_runtime.py
+          test -s src/blender/aina_visual_identity_final_runtime.py
 
       - name: Download already locked v15.5 real mesh
         env:
@@ -60,20 +58,18 @@ jobs:
             xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 \
             libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
           sudo ldconfig
-          ldconfig -p | grep -E 'libEGL.so.1|libGLX.so.0'
           curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
           mkdir blender
           tar -xf blender.tar.xz -C blender --strip-components=1
           echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
           git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
-          xvfb-run -a ./blender/blender --version
 
       - name: Sculpt, assemble and render actual AINA real 3D model
         run: |
           set -euo pipefail
           mkdir -p output_visual/QA output_visual/Preview
           xvfb-run -a -s '-screen 0 1920x1080x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
-            --python src/blender/aina_visual_identity_runtime.py -- \
+            --python src/blender/aina_visual_identity_final_runtime.py -- \
             --face diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
             --identity-report diag/output_locked/AINA_FACEVERSE_v15.5_REPORT.json \
             --out output_visual
@@ -83,20 +79,15 @@ jobs:
           set -euo pipefail
           test -s output_visual/AINA_MASTER.blend
           test -s output_visual/QA/AINA_VISUAL_IDENTITY_QA.json
-          for f in \
-            AINA_REAL_NEUTRAL_FRONT.png \
-            AINA_REAL_NEUTRAL_3Q.png \
-            AINA_REAL_HAPPY_FRONT.png \
-            AINA_REAL_SURPRISED_FRONT.png \
-            AINA_REAL_BLINK_FRONT.png \
-            AINA_REAL_AA_FRONT.png; do
-              test -s "output_visual/Preview/$f"
+          for f in AINA_REAL_NEUTRAL_FRONT.png AINA_REAL_NEUTRAL_3Q.png AINA_REAL_HAPPY_FRONT.png AINA_REAL_SURPRISED_FRONT.png AINA_REAL_BLINK_FRONT.png AINA_REAL_AA_FRONT.png; do
+            test -s "output_visual/Preview/$f"
           done
           python3 - <<'PY'
           import json, pathlib
           q=pathlib.Path('output_visual/QA/AINA_VISUAL_IDENTITY_QA.json')
           d=json.loads(q.read_text())
           d['ci_visual_gate']=True
+          d['visual_convergence_runtime']='aina_visual_identity_final_runtime.py'
           d['actual_preview_files']=sorted(p.name for p in pathlib.Path('output_visual/Preview').glob('AINA_REAL_*.png'))
           d['master_bytes']=pathlib.Path('output_visual/AINA_MASTER.blend').stat().st_size
           d['vrm_candidate_bytes']=pathlib.Path('output_visual/AINA.vrm').stat().st_size if pathlib.Path('output_visual/AINA.vrm').exists() else 0
