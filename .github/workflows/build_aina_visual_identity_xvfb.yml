@@ -1,0 +1,125 @@
+name: Build AINA Real 3D Visual Identity Xvfb
+
+on:
+  push:
+    branches: [production/aina-visual-lock]
+    paths:
+      - src/blender/aina_visual_identity_assembly.py
+      - src/blender/aina_visual_identity_runtime.py
+      - src/blender/aina_visual_eye_system.py
+      - src/blender/aina_visual_hair_system.py
+      - .github/workflows/build_aina_visual_identity_xvfb.yml
+  workflow_dispatch:
+
+concurrency:
+  group: aina-real-3d-visual-identity-xvfb
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  visual:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download locked AINA mesh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o diag.zip
+          unzip -q diag.zip -d diag
+          test -s diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+          test -s diag/output_locked/AINA_FACEVERSE_v15.5_REPORT.json
+
+      - name: Install Blender and software X display
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          ldconfig -p | grep -E 'libEGL.so.1|libGLX.so.0' || true
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+          git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
+          xvfb-run -a ./blender/blender --version
+
+      - name: Build and render actual AINA model
+        run: |
+          set +e
+          mkdir -p output_visual/QA output_visual/Preview qa
+          xvfb-run -a -s '-screen 0 1920x1080x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_visual_identity_runtime.py -- \
+            --face diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
+            --identity-report diag/output_locked/AINA_FACEVERSE_v15.5_REPORT.json \
+            --out output_visual 2>&1 | tee qa/AINA_VISUAL_XVFB.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > qa/AINA_VISUAL_XVFB_EXIT.txt
+          exit "$code"
+
+      - name: Verify real preview set
+        if: success()
+        run: |
+          set -euo pipefail
+          test -s output_visual/AINA_MASTER.blend
+          test -s output_visual/QA/AINA_VISUAL_IDENTITY_QA.json
+          for f in AINA_REAL_NEUTRAL_FRONT.png AINA_REAL_NEUTRAL_3Q.png AINA_REAL_HAPPY_FRONT.png AINA_REAL_SURPRISED_FRONT.png AINA_REAL_BLINK_FRONT.png AINA_REAL_AA_FRONT.png; do
+            test -s "output_visual/Preview/$f"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-REAL-3D-VISUAL-IDENTITY-XVFB
+          path: |
+            output_visual/AINA_MASTER.blend
+            output_visual/AINA.vrm
+            output_visual/Preview/**
+            output_visual/QA/**
+            qa/AINA_VISUAL_XVFB.log
+            qa/AINA_VISUAL_XVFB_EXIT.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish Xvfb visual build status
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path('output_visual'); log=Path('qa/AINA_VISUAL_XVFB.log'); exitf=Path('qa/AINA_VISUAL_XVFB_EXIT.txt')
+          code=int(exitf.read_text().strip()) if exitf.exists() else -1
+          previews=sorted(p.name for p in (root/'Preview').glob('AINA_REAL_*.png')) if (root/'Preview').exists() else []
+          marker={
+            'source_commit': os.environ.get('GITHUB_SHA',''),
+            'run_id': os.environ.get('GITHUB_RUN_ID',''),
+            'stage': 'visual_build_passed' if code==0 and len(previews)>=6 else 'visual_build_failed',
+            'pass': code==0 and len(previews)>=6,
+            'blender_exit': code,
+            'preview_count': len(previews),
+            'preview_files': previews,
+            'master_bytes': (root/'AINA_MASTER.blend').stat().st_size if (root/'AINA_MASTER.blend').exists() else 0,
+            'vrm_candidate_bytes': (root/'AINA.vrm').stat().st_size if (root/'AINA.vrm').exists() else 0,
+            'log_tail': '\n'.join(log.read_text(errors='replace').splitlines()[-80:]) if log.exists() else '',
+          }
+          Path('qa').mkdir(exist_ok=True)
+          Path('qa/AINA_VISUAL_BUILD_STATUS_XVFB.json').write_text(json.dumps(marker,indent=2),encoding='utf-8')
+          print(json.dumps(marker,indent=2))
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add qa/AINA_VISUAL_BUILD_STATUS_XVFB.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Record AINA Xvfb visual build status"
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
