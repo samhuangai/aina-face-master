@@ -1,5 +1,6 @@
 name: AINA Final Real 3D Visual Lock
 
+# Isolated visual-lock run after closing legacy PR CI fan-out.
 on:
   push:
     branches: [build/aina-v10-first-fit]
