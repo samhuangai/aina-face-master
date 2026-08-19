@@ -17,32 +17,33 @@ def _mesh(name,verts,faces,material):
 
 
 def _almond(name,center,material,side):
-    c=np.asarray(center,float);rx=.0155;rz=.00545;n=56;boundary=[]
+    # Wider, softly open almond aperture: this is real render geometry, not a decal.
+    c=np.asarray(center,float);rx=.0172;rz=.00620;n=64;boundary=[]
     for i in range(n+1):
         u=-1+2*i/n
-        z=rz*(max(0.,1-u*u)**.58)+(0.00042*u if side=='L' else -0.00042*u)
-        y=-.00925-.00115*(1-u*u);boundary.append((c[0]+rx*u,y,c[2]+z))
+        z=rz*(max(0.,1-u*u)**.60)+(0.00048*u if side=='L' else -0.00048*u)
+        y=-.00945-.00125*(1-u*u);boundary.append((c[0]+rx*u,y,c[2]+z))
     for i in range(n+1):
         u=1-2*i/n
-        z=-rz*.72*(max(0.,1-u*u)**.74)+(0.00022*u if side=='L' else -0.00022*u)
-        y=-.00920-.00090*(1-u*u);boundary.append((c[0]+rx*u,y,c[2]+z))
-    verts=[(c[0],-.01045,c[2])]+boundary;faces=[];m=len(boundary)
+        z=-rz*.66*(max(0.,1-u*u)**.76)+(0.00025*u if side=='L' else -0.00025*u)
+        y=-.00938-.00095*(1-u*u);boundary.append((c[0]+rx*u,y,c[2]+z))
+    verts=[(c[0],-.01070,c[2])]+boundary;faces=[];m=len(boundary)
     for i in range(m):faces.append((0,1+i,1+((i+1)%m)))
     ob=_mesh(name,verts,faces,material);ob.shape_key_add(name='Basis')
     blink='eyeBlinkLeft' if side=='L' else 'eyeBlinkRight';wide='eyeWideLeft' if side=='L' else 'eyeWideRight';squint='eyeSquintLeft' if side=='L' else 'eyeSquintRight'
     kb=ob.shape_key_add(name=blink)
     for p in kb.data:p.co.y+=.030
     kw=ob.shape_key_add(name=wide)
-    for p in kw.data:p.co.z=c[2]+(p.co.z-c[2])*1.15
+    for p in kw.data:p.co.z=c[2]+(p.co.z-c[2])*1.13
     ks=ob.shape_key_add(name=squint)
-    for p in ks.data:p.co.z=c[2]+(p.co.z-c[2])*.54
+    for p in ks.data:p.co.z=c[2]+(p.co.z-c[2])*.56
     return ob
 
 
 def _disc(name,center,radius,material,side,pupil=False):
-    c=np.asarray(center,float);n=56;verts=[tuple(c)];faces=[]
+    c=np.asarray(center,float);n=64;verts=[tuple(c)];faces=[]
     for i in range(n):
-        a=2*math.pi*i/n;x=radius*math.cos(a);z=radius*(1.04 if not pupil else 1.0)*math.sin(a);y=c[1]-.00024*(1-(x/max(radius,1e-6))**2)
+        a=2*math.pi*i/n;x=radius*math.cos(a);z=radius*(1.045 if not pupil else 1.0)*math.sin(a);y=c[1]-.00026*(1-(x/max(radius,1e-6))**2)
         verts.append((c[0]+x,y,c[2]+z))
     for i in range(n):faces.append((0,1+i,1+((i+1)%n)))
     ob=_mesh(name,verts,faces,material);ob.shape_key_add(name='Basis')
@@ -70,12 +71,12 @@ def install(visual,release):
         for poly,r in zip(head.data.polygons,face_roots):poly.material_index=0 if r==head_root else (1 if r in oral_big else 2);poly.use_smooth=True
         lm=mapped[visual.K];centers={'R':lm[36:42].mean(0),'L':lm[42:48].mean(0)};eyes=[]
         for side in ('R','L'):
-            c=centers[side].copy();c[1]=0.;eo=_almond('AINA_Eye_'+side,c,eye_mat,side);rid=eye_roots[0] if side=='R' else eye_roots[1];eyes.append((eo,np.asarray(groups[rid],np.int32),c))
+            c=centers[side].copy();c[1]=-.00035;eo=_almond('AINA_Eye_'+side,c,eye_mat,side);rid=eye_roots[0] if side=='R' else eye_roots[1];eyes.append((eo,np.asarray(groups[rid],np.int32),c))
         tongue_ids=groups[oral_roots[-1]] if oral_roots else np.array([],dtype=np.int32)
         return head,eyes,mapped,groups,head_root,oral_roots,tongue_ids
     def create_uv_sphere(name,location,scale,material,parent=None,rig=None):
         if name.startswith('AINA_Iris_') or name.startswith('AINA_Pupil_'):
-            side=name.rsplit('_',1)[-1];loc=np.asarray(location,float);radius=.00465 if name.startswith('AINA_Iris_') else .00195;loc[1]=-.01115 if name.startswith('AINA_Iris_') else -.01152
+            side=name.rsplit('_',1)[-1];loc=np.asarray(location,float);radius=.00520 if name.startswith('AINA_Iris_') else .00205;loc[1]=-.01148 if name.startswith('AINA_Iris_') else -.01188
             ob=_disc(name,loc,radius,material,side,pupil=name.startswith('AINA_Pupil_'))
             if parent and rig:base.bone_parent_preserve(ob,rig,parent)
             return ob
