@@ -1,0 +1,102 @@
+name: AINA Quick Real 3D Neutral QA
+
+on:
+  pull_request:
+    branches: [ci/aina-visual-base]
+    paths:
+      - RUN_AINA_QUICK_VISUAL
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-quick-real-3d-neutral
+  cancel-in-progress: true
+
+jobs:
+  quick_visual:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull production Blender code
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin \
+            build/aina-v10-first-fit:refs/remotes/origin/build/aina-v10-first-fit \
+            production/aina-visual-lock:refs/remotes/origin/production/aina-visual-lock
+          git checkout origin/build/aina-v10-first-fit -- src/blender
+          git checkout origin/production/aina-visual-lock -- \
+            src/blender/aina_visual_identity_assembly.py \
+            src/blender/aina_visual_identity_runtime.py \
+            src/blender/aina_visual_eye_system.py \
+            src/blender/aina_visual_hair_system.py
+
+      - name: Patch runtime for fast neutral-only inspection
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/blender/aina_visual_identity_assembly.py')
+          s=p.read_text()
+          s=s.replace("def render(name,loc,target,vals,res=(768,768)):","def render(name,loc,target,vals,res=(448,448)):")
+          old="cases={'AINA_REAL_NEUTRAL_FRONT.png':{},'AINA_REAL_HAPPY_FRONT.png':{'mouthSmileLeft':.82,'mouthSmileRight':.82,'cheekSquintLeft':.30,'cheekSquintRight':.30},'AINA_REAL_SURPRISED_FRONT.png':{'browInnerUp':.55,'eyeWideLeft':.86,'eyeWideRight':.86,'jawOpen':.58},'AINA_REAL_BLINK_FRONT.png':{'eyeBlinkLeft':1.0,'eyeBlinkRight':1.0},'AINA_REAL_AA_FRONT.png':{'jawOpen':.72,'mouthFunnel':.20}}"
+          s=s.replace(old,"cases={'AINA_REAL_NEUTRAL_FRONT.png':{}}")
+          s=s.replace("    render('AINA_REAL_FULL_BODY_FRONT.png',(0,-4.7,1.05),(0,0,.98),{},(1024,1536));_clear(head)","    _clear(head)")
+          p.write_text(s)
+
+          p=Path('src/blender/aina_final_vrm_assembly.py')
+          s=p.read_text()
+          needle="    previews=setup_render(out); bpy.ops.wm.save_as_mainfile(filepath=str(blend_path))\n    vrm_path=out/'AINA.vrm'; result=bpy.ops.export_scene.vrm(filepath=str(vrm_path))"
+          repl="    previews=setup_render(out); bpy.ops.wm.save_as_mainfile(filepath=str(blend_path))\n    return\n    vrm_path=out/'AINA.vrm'; result=bpy.ops.export_scene.vrm(filepath=str(vrm_path))"
+          if needle not in s: raise SystemExit('base main export patch point not found')
+          p.write_text(s.replace(needle,repl))
+          PY
+
+      - name: Download locked AINA mesh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o diag.zip
+          unzip -q diag.zip -d diag
+          test -s diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+
+      - name: Install Blender and Xvfb
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+          git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
+
+      - name: Build actual model and render neutral front plus 3Q
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s '-screen 0 1280x720x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_visual_identity_runtime.py -- \
+            --face diag/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
+            --identity-report diag/output_locked/AINA_FACEVERSE_v15.5_REPORT.json \
+            --out output_quick
+          test -s output_quick/AINA_MASTER.blend
+          test -s output_quick/Preview/AINA_REAL_NEUTRAL_FRONT.png
+          test -s output_quick/Preview/AINA_REAL_NEUTRAL_3Q.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AINA-QUICK-REAL-3D-NEUTRAL
+          path: |
+            output_quick/AINA_MASTER.blend
+            output_quick/Preview/**
+            output_quick/QA/**
+          if-no-files-found: error
+          retention-days: 14
