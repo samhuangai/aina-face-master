@@ -1,0 +1,124 @@
+name: Build AINA Identity Master GNM
+
+on:
+  pull_request:
+    branches: [ci/aina-identity-master-base]
+    paths:
+      - RUN_AINA_IDENTITY_MASTER
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-identity-master-gnm
+  cancel-in-progress: true
+
+jobs:
+  identity_master:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      TF_CPP_MIN_LOG_LEVEL: '2'
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install reconstruction dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git-lfs
+          git lfs install
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy==1.26.4 scipy trimesh matplotlib pillow h5py 'etils[epath]' tensorflow-cpu==2.20.0 face-alignment
+
+      - name: Materialize approved AINA references
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+          test -s references/AINA_APPROVED_FRONT.jpg
+          test -s references/AINA_APPROVED_3Q.jpg
+          test -s references/AINA_APPROVED_SIDE.jpg
+
+      - name: Fetch Google GNM v3 model data
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/google/GNM.git vendor/GNM
+          git -C vendor/GNM lfs install --local
+          git -C vendor/GNM lfs pull
+          test -s vendor/GNM/gnm/shape/data/semantic_sampler/identity_decoder_model.h5
+
+      - name: Extract approved front, 3Q and side landmarks
+        run: |
+          set -euo pipefail
+          python src/dump_all_target_landmarks.py
+          test -s output_target68/AINA_ALL_TARGET_68.json
+
+      - name: Reconstruct real AINA Identity Master head
+        env:
+          PYTHONPATH: ${{ github.workspace }}/vendor/GNM
+        run: |
+          set -euo pipefail
+          python src/fit_aina_gnm_identity_master.py \
+            --targets output_target68/AINA_ALL_TARGET_68.json \
+            --front-target references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --front-ref references/AINA_APPROVED_FRONT.jpg \
+            --q3-ref references/AINA_APPROVED_3Q.jpg \
+            --side-ref references/AINA_APPROVED_SIDE.jpg \
+            --samples 1024 \
+            --out output_identity_master
+
+      - name: Enforce real-mesh candidate gates
+        run: |
+          set -euo pipefail
+          for f in \
+            AINA_IDENTITY_MASTER_GNM_FULL.obj \
+            AINA_IDENTITY_MASTER_GNM_FULL.glb \
+            AINA_IDENTITY_MASTER_GNM_SKIN.obj \
+            AINA_IDENTITY_MASTER_REPORT.json; do
+              test -s "output_identity_master/$f"
+          done
+          for f in \
+            AINA_APPROVED_VS_IDENTITY_MASTER_FRONT.png \
+            AINA_APPROVED_VS_IDENTITY_MASTER_3Q.png \
+            AINA_APPROVED_VS_IDENTITY_MASTER_SIDE.png \
+            AINA_IDENTITY_MASTER_5VIEW.png; do
+              test -s "output_identity_master/QA/$f"
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('output_identity_master/AINA_IDENTITY_MASTER_REPORT.json')
+          d=json.loads(p.read_text())
+          assert d['real_mesh_reconstructed'] is True
+          assert d['topology_changed'] is False
+          assert d['identity_lock'] is False
+          assert d['vertices'] > 10000
+          assert d['mesh_health']['degenerate_triangles'] == 0
+          print(json.dumps({
+              'candidate': d['candidate'],
+              'vertices': d['vertices'],
+              'triangles': d['triangles'],
+              'fit_rmse_after_surface': d['fit_rmse_after_surface'],
+              'mesh_health': d['mesh_health'],
+          }, indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-IDENTITY-MASTER-GNM
+          path: |
+            output_target68/**
+            output_identity_master/**
+          if-no-files-found: error
+          retention-days: 30
