@@ -1,0 +1,135 @@
+name: AINA Surface Expression Convergence v2
+
+on:
+  pull_request:
+    branches: [ci/aina-expression-v2-base]
+    paths:
+      - RUN_AINA_EXPRESSION_V2
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-surface-expression-v2
+  cancel-in-progress: true
+
+jobs:
+  expression_v2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install lightweight QA dependencies
+        run: python -m pip install --upgrade numpy pillow
+
+      - name: Download locked AINA v15.5 source mesh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o locked.zip
+          unzip -q locked.zip -d locked
+          test -s locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+
+      - name: Apply current direct real-mesh convergence pass
+        run: |
+          set -euo pipefail
+          mkdir -p output_mesh output_expression/Preview output_expression/QA
+          python src/refine_aina_orbit_contour_neck.py \
+            --mesh locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
+            --out output_mesh/AINA_FACEVERSE_FULL_v15.5_SURFACE_REFINED.obj \
+            --report output_mesh/AINA_SURFACE_REFINEMENT_QA.json
+          test -s output_mesh/AINA_FACEVERSE_FULL_v15.5_SURFACE_REFINED.obj
+
+      - name: Install Blender 4.5.12 LTS and Xvfb
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 \
+            libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+          xvfb-run -a ./blender/blender --version
+
+      - name: Build corrected 52 controls and render real expression suite
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s '-screen 0 1280x720x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_surface_expression_qa_v2.py -- \
+            --face output_mesh/AINA_FACEVERSE_FULL_v15.5_SURFACE_REFINED.obj \
+            --out output_expression
+          test -s output_expression/AINA_SURFACE_EXPRESSION_QA_V2.blend
+          test -s output_expression/QA/AINA_SURFACE_EXPRESSION_QA_V2.json
+
+      - name: Build real-expression contact sheet
+        if: always()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageDraw
+          files=sorted(Path('output_expression/Preview').glob('AINA_EXPR_*.png'))
+          if not files:
+              raise SystemExit('no real expression renders were produced')
+          panels=[]
+          for p in files:
+              im=Image.open(p).convert('RGB'); im.thumbnail((330,330))
+              panel=Image.new('RGB',(350,375),'white')
+              panel.paste(im,((350-im.width)//2,5))
+              ImageDraw.Draw(panel).text((8,350),p.stem,fill='black')
+              panels.append(panel)
+          cols=4; rows=(len(panels)+cols-1)//cols
+          sheet=Image.new('RGB',(cols*350,rows*375),'white')
+          for i,panel in enumerate(panels):
+              sheet.paste(panel,((i%cols)*350,(i//cols)*375))
+          out=Path('output_expression/QA/AINA_EXPRESSION_V2_CONTACT_SHEET.png')
+          out.parent.mkdir(parents=True,exist_ok=True); sheet.save(out)
+          PY
+
+      - name: Enforce corrected expression gates
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          q=Path('output_expression/QA/AINA_SURFACE_EXPRESSION_QA_V2.json')
+          d=json.loads(q.read_text())
+          print(json.dumps(d,indent=2))
+          if d.get('shape_control_count') != 52:
+              raise SystemExit('52 shape controls were not preserved')
+          if d.get('automated_expression_gate') is not True:
+              raise SystemExit('corrected expression gate failed')
+          expected={
+            'AINA_EXPR_NEUTRAL_FRONT.png','AINA_EXPR_HAPPY_FRONT.png','AINA_EXPR_ANGRY_FRONT.png',
+            'AINA_EXPR_SAD_FRONT.png','AINA_EXPR_SURPRISED_FRONT.png','AINA_EXPR_BLINK_FRONT.png',
+            'AINA_EXPR_AA_FRONT.png','AINA_EXPR_IH_FRONT.png','AINA_EXPR_OU_FRONT.png',
+            'AINA_EXPR_EE_FRONT.png','AINA_EXPR_OH_FRONT.png','AINA_EXPR_NEUTRAL_3Q.png',
+            'AINA_EXPR_HAPPY_3Q.png',
+          }
+          actual={p.name for p in Path('output_expression/Preview').glob('*.png')}
+          missing=expected-actual
+          if missing:
+              raise SystemExit(f'missing expression renders: {sorted(missing)}')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-SURFACE-EXPRESSION-CONVERGENCE-V2
+          path: |
+            output_mesh/**
+            output_expression/**
+          if-no-files-found: error
+          retention-days: 30
