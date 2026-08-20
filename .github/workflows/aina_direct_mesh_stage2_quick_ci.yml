@@ -1,0 +1,107 @@
+name: AINA Direct Mesh Stage 2 Quick QA
+
+on:
+  pull_request:
+    branches: [ci/aina-visual-base]
+    paths:
+      - RUN_AINA_DIRECT_MESH_STAGE2_QUICK
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-direct-mesh-stage2-quick
+  cancel-in-progress: true
+
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull current production code
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin \
+            build/aina-v10-first-fit:refs/remotes/origin/build/aina-v10-first-fit \
+            production/aina-visual-lock:refs/remotes/origin/production/aina-visual-lock
+          git checkout origin/build/aina-v10-first-fit -- src/blender
+          git checkout origin/production/aina-visual-lock -- \
+            src/refine_aina_orbit_jaw_neck.py \
+            src/blender/aina_visual_identity_assembly.py \
+            src/blender/aina_visual_identity_runtime.py \
+            src/blender/aina_visual_eye_system.py \
+            src/blender/aina_visual_hair_system.py
+
+      - name: Patch to neutral front and 3Q only
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src/blender/aina_visual_eye_system.py')
+          s=p.read_text()
+          s=s.replace('def render(name,loc,target,vals,res=(768,768)):', 'def render(name,loc,target,vals,res=(448,448)):')
+          old="cases={'AINA_REAL_NEUTRAL_FRONT.png':{},'AINA_REAL_HAPPY_FRONT.png':{'mouthSmileLeft':.82,'mouthSmileRight':.82,'cheekSquintLeft':.30,'cheekSquintRight':.30},'AINA_REAL_SURPRISED_FRONT.png':{'browInnerUp':.55,'eyeWideLeft':.86,'eyeWideRight':.86,'jawOpen':.58},'AINA_REAL_BLINK_FRONT.png':{'eyeBlinkLeft':1.,'eyeBlinkRight':1.},'AINA_REAL_AA_FRONT.png':{'jawOpen':.72,'mouthFunnel':.20}}"
+          if old not in s: raise SystemExit('eye render case patch point missing')
+          s=s.replace(old,"cases={'AINA_REAL_NEUTRAL_FRONT.png':{}}")
+          s=s.replace(";render('AINA_REAL_FULL_BODY_FRONT.png',(0,-4.7,1.05),(0,0,.98),{},(1024,1536));clear_all()",";clear_all()")
+          p.write_text(s)
+
+          p=Path('src/blender/aina_final_vrm_assembly.py')
+          s=p.read_text()
+          needle="    previews=setup_render(out); bpy.ops.wm.save_as_mainfile(filepath=str(blend_path))\n    vrm_path=out/'AINA.vrm'; result=bpy.ops.export_scene.vrm(filepath=str(vrm_path))"
+          replacement="    previews=setup_render(out); bpy.ops.wm.save_as_mainfile(filepath=str(blend_path))\n    return\n    vrm_path=out/'AINA.vrm'; result=bpy.ops.export_scene.vrm(filepath=str(vrm_path))"
+          if needle not in s: raise SystemExit('VRM skip patch point missing')
+          p.write_text(s.replace(needle,replacement))
+          PY
+
+      - name: Download locked topology
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o locked.zip
+          unzip -q locked.zip -d locked
+
+      - name: Install Blender and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+          git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
+
+      - name: Refine mesh and render neutral views
+        run: |
+          set -euo pipefail
+          mkdir -p output_mesh output_quick/QA output_quick/Preview
+          xvfb-run -a "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/refine_aina_orbit_jaw_neck.py -- \
+            --mesh locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
+            --out output_mesh/AINA_FACEVERSE_FULL_VISUAL_REFINED.obj \
+            --report output_mesh/AINA_DIRECT_MESH_REPORT.json
+          xvfb-run -a -s '-screen 0 1280x720x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_visual_identity_runtime.py -- \
+            --face output_mesh/AINA_FACEVERSE_FULL_VISUAL_REFINED.obj \
+            --identity-report locked/output_locked/AINA_FACEVERSE_v15.5_REPORT.json \
+            --out output_quick
+          test -s output_quick/AINA_MASTER.blend
+          test -s output_quick/Preview/AINA_REAL_NEUTRAL_FRONT.png
+          test -s output_quick/Preview/AINA_REAL_NEUTRAL_3Q.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AINA-DIRECT-MESH-STAGE2-QUICK
+          path: |
+            output_mesh/**
+            output_quick/AINA_MASTER.blend
+            output_quick/Preview/**
+            output_quick/QA/**
+          if-no-files-found: error
+          retention-days: 14
