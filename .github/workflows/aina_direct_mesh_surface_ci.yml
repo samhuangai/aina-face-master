@@ -1,0 +1,153 @@
+name: AINA Direct Real Mesh Soft Tissue QA
+
+on:
+  pull_request:
+    branches: [ci/aina-direct-mesh-base]
+    paths:
+      - RUN_AINA_DIRECT_MESH_V5
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-direct-real-mesh-soft-tissue
+  cancel-in-progress: true
+
+jobs:
+  surface:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull latest production real-mesh code and approved references
+        run: |
+          set -euo pipefail
+          git fetch origin production/aina-visual-lock --depth=1
+          git checkout FETCH_HEAD -- \
+            src/refine_aina_orbit_jaw_neck_v2.py \
+            src/refine_aina_front_semantic_cage_v2.py \
+            src/refine_aina_3q_mediapipe_cage.py \
+            src/refine_aina_soft_tissue_taubin.py \
+            src/blender/aina_direct_mesh_render_qa.py \
+            references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            references/AINA_APPROVED_3Q.jpg.b64
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          for f in \
+            src/refine_aina_orbit_jaw_neck_v2.py \
+            src/refine_aina_front_semantic_cage_v2.py \
+            src/refine_aina_3q_mediapipe_cage.py \
+            src/refine_aina_soft_tissue_taubin.py \
+            src/blender/aina_direct_mesh_render_qa.py \
+            references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            references/AINA_APPROVED_3Q.jpg; do test -s "$f"; done
+
+      - name: Install geometry and MediaPipe runtime
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install numpy==1.26.4 scipy trimesh opencv-python-headless mediapipe==0.10.21
+
+      - name: Download locked AINA v15.5 actual mesh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o locked.zip
+          unzip -q locked.zip -d locked
+          test -s locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+
+      - name: Install Blender 4.5.12 LTS and software renderer
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 \
+            libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+          xvfb-run -a ./blender/blender --version
+
+      - name: Build direct multi-view-refined real OBJ
+        run: |
+          set -euo pipefail
+          mkdir -p output_mesh output_pre output_final
+          python3 src/refine_aina_orbit_jaw_neck_v2.py \
+            --mesh locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
+            --out output_mesh/AINA_01_CONTINUITY.obj \
+            --report output_mesh/AINA_01_CONTINUITY_REPORT.json
+          python3 src/refine_aina_front_semantic_cage_v2.py \
+            --mesh output_mesh/AINA_01_CONTINUITY.obj \
+            --target references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --out output_mesh/AINA_02_FRONT.obj \
+            --report output_mesh/AINA_02_FRONT_REPORT.json
+          xvfb-run -a -s '-screen 0 1280x720x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_direct_mesh_render_qa.py -- \
+            --face output_mesh/AINA_02_FRONT.obj \
+            --out output_pre
+          python3 src/refine_aina_3q_mediapipe_cage.py \
+            --mesh output_mesh/AINA_02_FRONT.obj \
+            --actual output_pre/AINA_DIRECT_REFINED_Q3_20.png \
+            --approved references/AINA_APPROVED_3Q.jpg \
+            --out output_mesh/AINA_03_Q3.obj \
+            --report output_mesh/AINA_03_Q3_REPORT.json
+          python3 src/refine_aina_front_semantic_cage_v2.py \
+            --mesh output_mesh/AINA_03_Q3.obj \
+            --target references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --out output_mesh/AINA_04_MULTIVIEW.obj \
+            --report output_mesh/AINA_04_FRONT_REPORT.json
+
+      - name: Polish actual soft-tissue surface without moving identity landmarks
+        run: |
+          set -euo pipefail
+          python3 src/refine_aina_soft_tissue_taubin.py \
+            --mesh output_mesh/AINA_04_MULTIVIEW.obj \
+            --out output_mesh/AINA_FACEVERSE_FULL_v15.5_SURFACE_REFINED.obj \
+            --report output_mesh/AINA_05_SURFACE_REPORT.json
+          python3 - <<'PY'
+          import json
+          files=[
+            'output_mesh/AINA_01_CONTINUITY_REPORT.json',
+            'output_mesh/AINA_02_FRONT_REPORT.json',
+            'output_mesh/AINA_03_Q3_REPORT.json',
+            'output_mesh/AINA_04_FRONT_REPORT.json',
+            'output_mesh/AINA_05_SURFACE_REPORT.json',
+          ]
+          for p in files:
+              d=json.load(open(p)); assert d.get('pass') is True, (p,d)
+              assert d.get('topology_changed') is False, (p,d)
+              print(p); print(json.dumps(d,indent=2))
+          PY
+
+      - name: Render exact surface-refined real OBJ
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s '-screen 0 1280x720x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_direct_mesh_render_qa.py -- \
+            --face output_mesh/AINA_FACEVERSE_FULL_v15.5_SURFACE_REFINED.obj \
+            --out output_final
+          for f in \
+            AINA_DIRECT_REFINED_FRONT.png \
+            AINA_DIRECT_REFINED_Q3_20.png \
+            AINA_DIRECT_REFINED_CLAY_FRONT.png \
+            AINA_DIRECT_REFINED_CLAY_Q3_20.png \
+            AINA_DIRECT_REFINED_HEAD_QA.blend; do test -s "output_final/$f"; done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-DIRECT-REAL-MESH-SURFACE-QA
+          path: |
+            output_mesh/**
+            output_pre/**
+            output_final/**
+          if-no-files-found: warn
+          retention-days: 14
