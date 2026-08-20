@@ -1,0 +1,123 @@
+name: AINA Direct Real Mesh Contour QA
+
+on:
+  push:
+    branches: [production/aina-visual-lock]
+    paths:
+      - src/refine_aina_orbit_contour_neck.py
+      - src/blender/aina_visual_identity_runtime.py
+      - src/blender/aina_visual_eye_system.py
+      - src/blender/aina_visual_hair_system.py
+      - .github/workflows/build_aina_direct_mesh_contour.yml
+  workflow_dispatch:
+
+concurrency:
+  group: aina-direct-real-mesh-contour
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  mesh_qa:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download locked AINA v15.5 source mesh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o locked.zip
+          unzip -q locked.zip -d locked
+          test -s locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+          test -s locked/output_locked/AINA_FACEVERSE_v15.5_REPORT.json
+
+      - name: Install Blender 4.5.12 LTS and software renderer
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 \
+            libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+          git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
+          xvfb-run -a ./blender/blender --version
+
+      - name: Directly refine the existing real OBJ mesh
+        run: |
+          set -euo pipefail
+          mkdir -p output_mesh output_visual/QA output_visual/Preview
+          xvfb-run -a "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/refine_aina_orbit_contour_neck.py -- \
+            --mesh locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
+            --out output_mesh/AINA_FACEVERSE_FULL_v15.5_VISUAL_REFINED.obj \
+            --report output_mesh/AINA_DIRECT_MESH_REFINEMENT_QA.json
+          test -s output_mesh/AINA_FACEVERSE_FULL_v15.5_VISUAL_REFINED.obj
+          test -s output_mesh/AINA_DIRECT_MESH_REFINEMENT_QA.json
+
+      - name: Assemble and render the actual refined AINA model
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s '-screen 0 1920x1080x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_visual_identity_runtime.py -- \
+            --face output_mesh/AINA_FACEVERSE_FULL_v15.5_VISUAL_REFINED.obj \
+            --identity-report locked/output_locked/AINA_FACEVERSE_v15.5_REPORT.json \
+            --out output_visual
+
+      - name: Hard real-model visual gate
+        run: |
+          set -euo pipefail
+          test -s output_visual/AINA_MASTER.blend
+          test -s output_visual/QA/AINA_VISUAL_IDENTITY_QA.json
+          for f in \
+            AINA_REAL_NEUTRAL_FRONT.png \
+            AINA_REAL_NEUTRAL_3Q.png \
+            AINA_REAL_HAPPY_FRONT.png \
+            AINA_REAL_SURPRISED_FRONT.png \
+            AINA_REAL_BLINK_FRONT.png \
+            AINA_REAL_AA_FRONT.png; do
+              test -s "output_visual/Preview/$f"
+          done
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          mesh=json.loads(Path('output_mesh/AINA_DIRECT_MESH_REFINEMENT_QA.json').read_text())
+          visual=json.loads(Path('output_visual/QA/AINA_VISUAL_IDENTITY_QA.json').read_text())
+          merged={
+            'stage':'AINA direct real-mesh contour QA completed',
+            'mesh':mesh,
+            'visual':visual,
+            'preview_files':sorted(p.name for p in Path('output_visual/Preview').glob('AINA_REAL_*.png')),
+            'master_bytes':Path('output_visual/AINA_MASTER.blend').stat().st_size,
+            'vrm_candidate_bytes':Path('output_visual/AINA.vrm').stat().st_size if Path('output_visual/AINA.vrm').exists() else 0,
+            'build_pass':True,
+            'visual_identity_lock':False,
+          }
+          Path('output_visual/QA/AINA_DIRECT_CONTOUR_BUILD_QA.json').write_text(json.dumps(merged,indent=2),encoding='utf-8')
+          print(json.dumps(merged,indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-DIRECT-REAL-MESH-CONTOUR-QA
+          path: |
+            output_mesh/**
+            output_visual/AINA_MASTER.blend
+            output_visual/AINA.vrm
+            output_visual/Preview/**
+            output_visual/QA/**
+          if-no-files-found: warn
+          retention-days: 30
