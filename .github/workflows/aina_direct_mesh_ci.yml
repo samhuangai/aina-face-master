@@ -17,33 +17,12 @@ concurrency:
 jobs:
   direct_mesh:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     env:
       LIBGL_ALWAYS_SOFTWARE: '1'
       MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
     steps:
       - uses: actions/checkout@v4
-
-      - name: Patch QA runtime to neutral front and 3Q only
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('src/blender/aina_visual_eye_system.py')
-          s=p.read_text()
-          old="cases={'AINA_REAL_NEUTRAL_FRONT.png':{},'AINA_REAL_HAPPY_FRONT.png':{'mouthSmileLeft':.82,'mouthSmileRight':.82,'cheekSquintLeft':.30,'cheekSquintRight':.30},'AINA_REAL_SURPRISED_FRONT.png':{'browInnerUp':.55,'eyeWideLeft':.86,'eyeWideRight':.86,'jawOpen':.58},'AINA_REAL_BLINK_FRONT.png':{'eyeBlinkLeft':1.,'eyeBlinkRight':1.},'AINA_REAL_AA_FRONT.png':{'jawOpen':.72,'mouthFunnel':.20}}"
-          if old not in s: raise SystemExit('eye render case patch point missing')
-          s=s.replace(old,"cases={'AINA_REAL_NEUTRAL_FRONT.png':{}}")
-          s=s.replace(";render('AINA_REAL_FULL_BODY_FRONT.png',(0,-4.7,1.05),(0,0,.98),{},(1024,1536));clear_all()",";clear_all()")
-          s=s.replace('def render(name,loc,target,vals,res=(768,768)):', 'def render(name,loc,target,vals,res=(512,512)):')
-          p.write_text(s)
-
-          p=Path('src/blender/aina_final_vrm_assembly.py')
-          s=p.read_text()
-          needle="    previews=setup_render(out); bpy.ops.wm.save_as_mainfile(filepath=str(blend_path))\n    vrm_path=out/'AINA.vrm'; result=bpy.ops.export_scene.vrm(filepath=str(vrm_path))"
-          repl="    previews=setup_render(out); bpy.ops.wm.save_as_mainfile(filepath=str(blend_path))\n    return\n    vrm_path=out/'AINA.vrm'; result=bpy.ops.export_scene.vrm(filepath=str(vrm_path))"
-          if needle not in s: raise SystemExit('VRM export patch point missing')
-          p.write_text(s.replace(needle,repl))
-          PY
 
       - name: Download locked AINA v15.5 source mesh
         env:
@@ -54,18 +33,22 @@ jobs:
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o locked.zip
           unzip -q locked.zip -d locked
           test -s locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+          test -s locked/output_locked/AINA_FACEVERSE_v15.5_REPORT.json
 
       - name: Install Blender and Xvfb
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 \
+            libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
           sudo ldconfig
           curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
           mkdir blender
           tar -xf blender.tar.xz -C blender --strip-components=1
           echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
           git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
+          xvfb-run -a ./blender/blender --version
 
       - name: Directly edit the real OBJ vertices
         run: |
@@ -76,18 +59,27 @@ jobs:
             --mesh locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
             --out output_mesh/AINA_FACEVERSE_FULL_v15.5_VISUAL_REFINED.obj \
             --report output_mesh/AINA_DIRECT_MESH_REFINEMENT_QA.json
+          test -s output_mesh/AINA_FACEVERSE_FULL_v15.5_VISUAL_REFINED.obj
+          test -s output_mesh/AINA_DIRECT_MESH_REFINEMENT_QA.json
 
-      - name: Build and render actual refined neutral model
+      - name: Build and render actual refined model
         run: |
           set -euo pipefail
-          xvfb-run -a -s '-screen 0 1280x720x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
+          xvfb-run -a -s '-screen 0 1920x1080x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
             --python src/blender/aina_visual_identity_runtime.py -- \
             --face output_mesh/AINA_FACEVERSE_FULL_v15.5_VISUAL_REFINED.obj \
             --identity-report locked/output_locked/AINA_FACEVERSE_v15.5_REPORT.json \
             --out output_visual
           test -s output_visual/AINA_MASTER.blend
-          test -s output_visual/Preview/AINA_REAL_NEUTRAL_FRONT.png
-          test -s output_visual/Preview/AINA_REAL_NEUTRAL_3Q.png
+          for f in \
+            AINA_REAL_NEUTRAL_FRONT.png \
+            AINA_REAL_NEUTRAL_3Q.png \
+            AINA_REAL_HAPPY_FRONT.png \
+            AINA_REAL_SURPRISED_FRONT.png \
+            AINA_REAL_BLINK_FRONT.png \
+            AINA_REAL_AA_FRONT.png; do
+              test -s "output_visual/Preview/$f"
+          done
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -96,6 +88,7 @@ jobs:
           path: |
             output_mesh/**
             output_visual/AINA_MASTER.blend
+            output_visual/AINA.vrm
             output_visual/Preview/**
             output_visual/QA/**
           if-no-files-found: warn
