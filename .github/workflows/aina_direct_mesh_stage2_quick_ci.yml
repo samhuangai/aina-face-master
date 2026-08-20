@@ -33,6 +33,7 @@ jobs:
           git checkout origin/build/aina-v10-first-fit -- src/blender
           git checkout origin/production/aina-visual-lock -- \
             src/refine_aina_orbit_jaw_neck.py \
+            src/refine_aina_neutral_graft_fix.py \
             src/blender/aina_visual_identity_assembly.py \
             src/blender/aina_visual_identity_runtime.py \
             src/blender/aina_visual_eye_system.py \
@@ -42,13 +43,19 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
+
           p=Path('src/blender/aina_visual_eye_system.py')
           s=p.read_text()
-          s=s.replace('def render(name,loc,target,vals,res=(768,768)):', 'def render(name,loc,target,vals,res=(448,448)):')
-          old="cases={'AINA_REAL_NEUTRAL_FRONT.png':{},'AINA_REAL_HAPPY_FRONT.png':{'mouthSmileLeft':.82,'mouthSmileRight':.82,'cheekSquintLeft':.30,'cheekSquintRight':.30},'AINA_REAL_SURPRISED_FRONT.png':{'browInnerUp':.55,'eyeWideLeft':.86,'eyeWideRight':.86,'jawOpen':.58},'AINA_REAL_BLINK_FRONT.png':{'eyeBlinkLeft':1.,'eyeBlinkRight':1.},'AINA_REAL_AA_FRONT.png':{'jawOpen':.72,'mouthFunnel':.20}}"
-          if old not in s: raise SystemExit('eye render case patch point missing')
-          s=s.replace(old,"cases={'AINA_REAL_NEUTRAL_FRONT.png':{}}")
-          s=s.replace(";render('AINA_REAL_FULL_BODY_FRONT.png',(0,-4.7,1.05),(0,0,.98),{},(1024,1536));clear_all()",";clear_all()")
+          s=s.replace('def render(name, location, target, values, resolution=(768, 768)):',
+                      'def render(name, location, target, values, resolution=(448, 448)):')
+          s=re.sub(
+              r'        cases = \{.*?\n        \}\n        for name, values in cases.items\(\):',
+              '        cases = {"AINA_REAL_NEUTRAL_FRONT.png": {}}\n        for name, values in cases.items():',
+              s,
+              flags=re.S,
+          )
+          s=s.replace('        render("AINA_REAL_FULL_BODY_FRONT.png", (0, -4.7, 1.05), (0, 0, 0.98), {}, (1024, 1536))\n', '')
           p.write_text(s)
 
           p=Path('src/blender/aina_final_vrm_assembly.py')
@@ -84,8 +91,13 @@ jobs:
           xvfb-run -a "$BLENDER" --background --factory-startup --python-exit-code 1 \
             --python src/refine_aina_orbit_jaw_neck.py -- \
             --mesh locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
-            --out output_mesh/AINA_FACEVERSE_FULL_VISUAL_REFINED.obj \
+            --out output_mesh/AINA_FACEVERSE_STAGE2.obj \
             --report output_mesh/AINA_DIRECT_MESH_REPORT.json
+          xvfb-run -a "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/refine_aina_neutral_graft_fix.py -- \
+            --mesh output_mesh/AINA_FACEVERSE_STAGE2.obj \
+            --out output_mesh/AINA_FACEVERSE_FULL_VISUAL_REFINED.obj \
+            --report output_mesh/AINA_NEUTRAL_GRAFT_REPORT.json
           xvfb-run -a -s '-screen 0 1280x720x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
             --python src/blender/aina_visual_identity_runtime.py -- \
             --face output_mesh/AINA_FACEVERSE_FULL_VISUAL_REFINED.obj \
