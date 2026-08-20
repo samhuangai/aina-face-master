@@ -1,0 +1,124 @@
+name: AINA Direct Mesh Stage 2 CI
+
+on:
+  pull_request:
+    branches: [ci/aina-visual-base]
+    paths:
+      - RUN_AINA_DIRECT_MESH_STAGE2
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-direct-mesh-stage2-ci
+  cancel-in-progress: true
+
+jobs:
+  direct_mesh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull current production mesh and Blender code
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin \
+            build/aina-v10-first-fit:refs/remotes/origin/build/aina-v10-first-fit \
+            production/aina-visual-lock:refs/remotes/origin/production/aina-visual-lock
+          git checkout origin/build/aina-v10-first-fit -- src/blender
+          git checkout origin/production/aina-visual-lock -- \
+            src/refine_aina_orbit_jaw_neck.py \
+            src/blender/aina_visual_identity_assembly.py \
+            src/blender/aina_visual_identity_runtime.py \
+            src/blender/aina_visual_eye_system.py \
+            src/blender/aina_visual_hair_system.py
+          test -s src/refine_aina_orbit_jaw_neck.py
+          test -s src/blender/aina_visual_identity_runtime.py
+
+      - name: Download locked AINA v15.5 topology
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o locked.zip
+          unzip -q locked.zip -d locked
+          test -s locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+          test -s locked/output_locked/AINA_FACEVERSE_v15.5_REPORT.json
+
+      - name: Install Blender 4.5.12 LTS and Xvfb
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 \
+            libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+          git clone --depth 1 --branch v4.5.0 https://github.com/saturday06/VRM-Addon-for-Blender.git vendor/VRM-Addon-for-Blender
+          xvfb-run -a ./blender/blender --version
+
+      - name: Refine actual OBJ vertices
+        run: |
+          set -euo pipefail
+          mkdir -p output_mesh output_visual/QA output_visual/Preview
+          xvfb-run -a "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/refine_aina_orbit_jaw_neck.py -- \
+            --mesh locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
+            --out output_mesh/AINA_FACEVERSE_FULL_VISUAL_REFINED.obj \
+            --report output_mesh/AINA_DIRECT_MESH_REPORT.json
+          test -s output_mesh/AINA_FACEVERSE_FULL_VISUAL_REFINED.obj
+          test -s output_mesh/AINA_DIRECT_MESH_REPORT.json
+
+      - name: Render actual Blender model and expressions
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s '-screen 0 1920x1080x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_visual_identity_runtime.py -- \
+            --face output_mesh/AINA_FACEVERSE_FULL_VISUAL_REFINED.obj \
+            --identity-report locked/output_locked/AINA_FACEVERSE_v15.5_REPORT.json \
+            --out output_visual
+
+      - name: Hard gate direct mesh outputs
+        run: |
+          set -euo pipefail
+          test -s output_visual/AINA_MASTER.blend
+          test -s output_visual/QA/AINA_VISUAL_IDENTITY_QA.json
+          for f in \
+            AINA_REAL_NEUTRAL_FRONT.png \
+            AINA_REAL_NEUTRAL_3Q.png \
+            AINA_REAL_HAPPY_FRONT.png \
+            AINA_REAL_SURPRISED_FRONT.png \
+            AINA_REAL_BLINK_FRONT.png \
+            AINA_REAL_AA_FRONT.png; do
+              test -s "output_visual/Preview/$f"
+          done
+          python3 - <<'PY'
+          import json
+          d=json.load(open('output_mesh/AINA_DIRECT_MESH_REPORT.json'))
+          assert d['topology_changed'] is False, d
+          assert d['vertex_count'] == 19546, d
+          assert d['max_head_displacement_m'] <= 0.012, d
+          print(json.dumps(d,indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-DIRECT-MESH-STAGE2-CI
+          path: |
+            output_mesh/**
+            output_visual/AINA_MASTER.blend
+            output_visual/AINA.vrm
+            output_visual/Preview/**
+            output_visual/QA/**
+          if-no-files-found: warn
+          retention-days: 30
