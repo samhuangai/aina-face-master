@@ -1,0 +1,102 @@
+name: AINA Direct Mesh Continuity QA
+
+on:
+  pull_request:
+    branches: [ci/aina-direct-mesh-base]
+    paths:
+      - RUN_AINA_DIRECT_MESH_V2
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-direct-mesh-continuity-qa
+  cancel-in-progress: true
+
+jobs:
+  continuity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull latest production direct-mesh scripts
+        run: |
+          set -euo pipefail
+          git fetch origin production/aina-visual-lock --depth=1
+          git checkout FETCH_HEAD -- \
+            src/refine_aina_orbit_jaw_neck_v2.py \
+            src/blender/aina_direct_mesh_render_qa.py
+          test -s src/refine_aina_orbit_jaw_neck_v2.py
+          test -s src/blender/aina_direct_mesh_render_qa.py
+
+      - name: Download locked AINA v15.5 real mesh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o locked.zip
+          unzip -q locked.zip -d locked
+          test -s locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+
+      - name: Install Blender and software render runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 \
+            libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+          xvfb-run -a ./blender/blender --version
+
+      - name: Directly refine actual OBJ vertices
+        run: |
+          set -euo pipefail
+          mkdir -p output_mesh output_qa
+          xvfb-run -a "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/refine_aina_orbit_jaw_neck_v2.py -- \
+            --mesh locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
+            --out output_mesh/AINA_FACEVERSE_FULL_v15.5_CONTINUITY_REFINED.obj \
+            --report output_mesh/AINA_DIRECT_CONTINUITY_REPORT.json
+          test -s output_mesh/AINA_FACEVERSE_FULL_v15.5_CONTINUITY_REFINED.obj
+          test -s output_mesh/AINA_DIRECT_CONTINUITY_REPORT.json
+          python3 - <<'PY'
+          import json
+          d=json.load(open('output_mesh/AINA_DIRECT_CONTINUITY_REPORT.json'))
+          assert d.get('pass') is True, d
+          assert d.get('topology_changed') is False, d
+          assert d.get('semantic_vertex_order_preserved') is True, d
+          print(json.dumps(d,indent=2))
+          PY
+
+      - name: Render untouched refined mesh front and 3Q
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s '-screen 0 1280x720x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_direct_mesh_render_qa.py -- \
+            --face output_mesh/AINA_FACEVERSE_FULL_v15.5_CONTINUITY_REFINED.obj \
+            --out output_qa
+          test -s output_qa/AINA_DIRECT_REFINED_FRONT.png
+          test -s output_qa/AINA_DIRECT_REFINED_Q3_20.png
+          test -s output_qa/AINA_DIRECT_REFINED_CLAY_FRONT.png
+          test -s output_qa/AINA_DIRECT_REFINED_CLAY_Q3_20.png
+          test -s output_qa/AINA_DIRECT_REFINED_HEAD_QA.blend
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-DIRECT-MESH-CONTINUITY-QA
+          path: |
+            output_mesh/**
+            output_qa/**
+          if-no-files-found: warn
+          retention-days: 14
