@@ -1,0 +1,120 @@
+name: AINA Direct Mesh Semantic Convergence QA
+
+on:
+  pull_request:
+    branches: [ci/aina-direct-mesh-base]
+    paths:
+      - RUN_AINA_DIRECT_MESH_V3
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-direct-mesh-semantic-convergence
+  cancel-in-progress: true
+
+jobs:
+  semantic_mesh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull latest real-mesh refinement and QA code
+        run: |
+          set -euo pipefail
+          git fetch origin production/aina-visual-lock --depth=1
+          git checkout FETCH_HEAD -- \
+            src/refine_aina_orbit_jaw_neck_v2.py \
+            src/refine_aina_front_semantic_cage_v2.py \
+            src/blender/aina_direct_mesh_render_qa.py \
+            references/AINA_TARGET_3DDFA_SPARSE_68.json
+          test -s src/refine_aina_orbit_jaw_neck_v2.py
+          test -s src/refine_aina_front_semantic_cage_v2.py
+          test -s src/blender/aina_direct_mesh_render_qa.py
+          test -s references/AINA_TARGET_3DDFA_SPARSE_68.json
+
+      - name: Download locked AINA v15.5 real mesh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o locked.zip
+          unzip -q locked.zip -d locked
+          test -s locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+
+      - name: Install Blender and software render runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 \
+            libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+          xvfb-run -a ./blender/blender --version
+
+      - name: Refine real orbit cheek jaw ear and neck continuity
+        run: |
+          set -euo pipefail
+          mkdir -p output_mesh output_qa
+          xvfb-run -a "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/refine_aina_orbit_jaw_neck_v2.py -- \
+            --mesh locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
+            --out output_mesh/AINA_FACEVERSE_FULL_v15.5_CONTINUITY_REFINED.obj \
+            --report output_mesh/AINA_DIRECT_CONTINUITY_REPORT.json
+          test -s output_mesh/AINA_FACEVERSE_FULL_v15.5_CONTINUITY_REFINED.obj
+          test -s output_mesh/AINA_DIRECT_CONTINUITY_REPORT.json
+
+      - name: Restore approved AINA front semantic proportions
+        run: |
+          set -euo pipefail
+          xvfb-run -a "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/refine_aina_front_semantic_cage_v2.py -- \
+            --mesh output_mesh/AINA_FACEVERSE_FULL_v15.5_CONTINUITY_REFINED.obj \
+            --target references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --out output_mesh/AINA_FACEVERSE_FULL_v15.5_SEMANTIC_REFINED.obj \
+            --report output_mesh/AINA_FRONT_SEMANTIC_CAGE_REPORT.json
+          test -s output_mesh/AINA_FACEVERSE_FULL_v15.5_SEMANTIC_REFINED.obj
+          test -s output_mesh/AINA_FRONT_SEMANTIC_CAGE_REPORT.json
+          python3 - <<'PY'
+          import json
+          for p in ('output_mesh/AINA_DIRECT_CONTINUITY_REPORT.json','output_mesh/AINA_FRONT_SEMANTIC_CAGE_REPORT.json'):
+              d=json.load(open(p)); assert d.get('pass') is True, (p,d)
+              assert d.get('topology_changed') is False, (p,d)
+              print(p); print(json.dumps(d,indent=2))
+          PY
+
+      - name: Render exact final refined OBJ without another sculpt
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s '-screen 0 1280x720x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_direct_mesh_render_qa.py -- \
+            --face output_mesh/AINA_FACEVERSE_FULL_v15.5_SEMANTIC_REFINED.obj \
+            --out output_qa
+          for f in \
+            AINA_DIRECT_REFINED_FRONT.png \
+            AINA_DIRECT_REFINED_Q3_20.png \
+            AINA_DIRECT_REFINED_CLAY_FRONT.png \
+            AINA_DIRECT_REFINED_CLAY_Q3_20.png \
+            AINA_DIRECT_REFINED_HEAD_QA.blend; do
+              test -s "output_qa/$f"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-DIRECT-MESH-SEMANTIC-QA
+          path: |
+            output_mesh/**
+            output_qa/**
+          if-no-files-found: warn
+          retention-days: 14
