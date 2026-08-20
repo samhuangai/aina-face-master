@@ -1,0 +1,104 @@
+name: AINA Final Visual Identity Correction v2
+
+on:
+  pull_request:
+    branches: [ci/aina-final-visual-v2-base]
+    paths:
+      - RUN_AINA_FINAL_VISUAL_V2
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-final-visual-identity-v2
+  cancel-in-progress: true
+
+jobs:
+  final_visual_v2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+
+      - name: Install lightweight dependencies
+        run: python -m pip install --upgrade numpy pillow
+
+      - name: Download locked AINA source mesh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9275974352/zip" -o locked.zip
+          unzip -q locked.zip -d locked
+          test -s locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj
+
+      - name: Apply real-mesh surface refinement
+        run: |
+          set -euo pipefail
+          mkdir -p output_mesh output_visual/Preview output_visual/QA
+          python src/refine_aina_orbit_contour_neck.py \
+            --mesh locked/output_locked/AINA_FACEVERSE_FULL_v15.5_IDENTITY_LOCKED.obj \
+            --out output_mesh/AINA_FACEVERSE_FULL_v15.5_SURFACE_REFINED.obj \
+            --report output_mesh/AINA_SURFACE_REFINEMENT_QA.json
+
+      - name: Install Blender 4.5.12 LTS and Xvfb
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 \
+            libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+          xvfb-run -a ./blender/blender --version
+
+      - name: Render corrected actual AINA visual identity
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s '-screen 0 1280x720x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_final_visual_identity_qa_v2.py -- \
+            --face output_mesh/AINA_FACEVERSE_FULL_v15.5_SURFACE_REFINED.obj \
+            --out output_visual
+          test -s output_visual/AINA_FINAL_VISUAL_IDENTITY_QA.blend
+          test -s output_visual/QA/AINA_FINAL_VISUAL_IDENTITY_QA.json
+          for f in AINA_VISUAL_NEUTRAL_FRONT.png AINA_VISUAL_NEUTRAL_3Q.png AINA_VISUAL_HAPPY_FRONT.png AINA_VISUAL_HAPPY_3Q.png; do
+            test -s "output_visual/Preview/$f"
+          done
+
+      - name: Build corrected visual contact sheet
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageDraw
+          files=[Path('output_visual/Preview')/n for n in (
+            'AINA_VISUAL_NEUTRAL_FRONT.png','AINA_VISUAL_NEUTRAL_3Q.png',
+            'AINA_VISUAL_HAPPY_FRONT.png','AINA_VISUAL_HAPPY_3Q.png')]
+          panels=[]
+          for p in files:
+              im=Image.open(p).convert('RGB'); im.thumbnail((500,500))
+              panel=Image.new('RGB',(520,545),'white'); panel.paste(im,((520-im.width)//2,5))
+              ImageDraw.Draw(panel).text((8,520),p.stem,fill='black'); panels.append(panel)
+          sheet=Image.new('RGB',(1040,1090),'white')
+          for i,panel in enumerate(panels): sheet.paste(panel,((i%2)*520,(i//2)*545))
+          sheet.save('output_visual/QA/AINA_FINAL_VISUAL_IDENTITY_V2_CONTACT_SHEET.png')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-FINAL-VISUAL-IDENTITY-CORRECTION-V2
+          path: |
+            output_mesh/**
+            output_visual/**
+          if-no-files-found: error
+          retention-days: 30
