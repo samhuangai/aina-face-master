@@ -1,0 +1,112 @@
+name: Build AINA Identity Master GNM v4
+
+on:
+  pull_request:
+    branches: [ci/aina-identity-master-base]
+    paths:
+      - RUN_AINA_IDENTITY_MASTER_V4
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-identity-master-gnm-v4
+  cancel-in-progress: true
+
+jobs:
+  identity_master_v4:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      TF_CPP_MIN_LOG_LEVEL: '2'
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install reconstruction dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git-lfs
+          git lfs install
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy==1.26.4 scipy trimesh matplotlib pillow h5py 'etils[epath]' tensorflow-cpu==2.20.0 face-alignment
+
+      - name: Materialize approved AINA references
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+
+      - name: Fetch Google GNM v3 model data
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/google/GNM.git vendor/GNM
+          git -C vendor/GNM lfs install --local
+          git -C vendor/GNM lfs pull
+          test -s vendor/GNM/gnm/shape/data/semantic_sampler/identity_decoder_model.h5
+          test -s vendor/GNM/gnm/shape/data/semantic_sampler/expression_decoder_model.h5
+
+      - name: Extract approved front, 3Q and side landmarks
+        run: |
+          set -euo pipefail
+          python src/dump_all_target_landmarks.py
+          test -s output_target68/AINA_ALL_TARGET_68.json
+
+      - name: Reconstruct real AINA Identity Master v4 head
+        env:
+          PYTHONPATH: ${{ github.workspace }}/vendor/GNM:${{ github.workspace }}/src
+        run: |
+          set +e
+          mkdir -p output_identity_master/QA
+          python src/fit_aina_gnm_identity_master_v4.py \
+            --targets output_target68/AINA_ALL_TARGET_68.json \
+            --front-target references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --front-ref references/AINA_APPROVED_FRONT.jpg \
+            --q3-ref references/AINA_APPROVED_3Q.jpg \
+            --side-ref references/AINA_APPROVED_SIDE.jpg \
+            --out output_identity_master 2>&1 | tee output_identity_master/AINA_IDENTITY_MASTER_V4_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output_identity_master/AINA_IDENTITY_MASTER_V4_EXIT.txt
+          exit "$code"
+
+      - name: Enforce real-mesh candidate gates
+        if: success()
+        run: |
+          set -euo pipefail
+          test -s output_identity_master/AINA_IDENTITY_MASTER_GNM_FULL.obj
+          test -s output_identity_master/AINA_IDENTITY_MASTER_GNM_SKIN.glb
+          test -s output_identity_master/AINA_IDENTITY_MASTER_V3_REPORT.json
+          test -s output_identity_master/QA/AINA_APPROVED_VS_IDENTITY_MASTER_V3_FRONT.png
+          test -s output_identity_master/QA/AINA_APPROVED_VS_IDENTITY_MASTER_V3_THREE_QUARTER.png
+          test -s output_identity_master/QA/AINA_APPROVED_VS_IDENTITY_MASTER_V3_SIDE.png
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=Path('output_identity_master/AINA_IDENTITY_MASTER_V3_REPORT.json')
+          data=json.loads(report.read_text())
+          assert data.get('identity_lock') is False
+          assert data.get('candidate') is True
+          assert data.get('topology_changed') is False
+          assert data.get('real_mesh_reconstructed') is True
+          assert data.get('vertices',0)>10000
+          assert data.get('triangles',0)>20000
+          print(json.dumps(data,indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-IDENTITY-MASTER-GNM-V4
+          path: |
+            output_identity_master/**
+            output_target68/**
+          if-no-files-found: error
+          retention-days: 30
