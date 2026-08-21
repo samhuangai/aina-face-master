@@ -1,0 +1,267 @@
+name: Build AINA Final Real Visual Lock
+
+on:
+  pull_request:
+    branches: [ci/aina-final-visual-lock-base]
+    paths:
+      - RUN_AINA_FINAL_VISUAL_LOCK
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-final-real-visual-lock
+  cancel-in-progress: true
+
+jobs:
+  final_visual_lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install landmark and image dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy==1.26.4 pillow face-alignment
+
+      - name: Materialize the already-approved AINA references
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+          test -s references/AINA_APPROVED_FRONT.jpg
+          test -s references/AINA_APPROVED_3Q.jpg
+          test -s references/AINA_APPROVED_SIDE.jpg
+          test -s references/AINA_TARGET_3DDFA_SPARSE_68.json
+
+      - name: Download the latest real identity-lock candidate artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request, pathlib
+          repository=os.environ['GITHUB_REPOSITORY']
+          token=os.environ['GH_TOKEN']
+          run_id=32462848029
+          headers={
+              'Authorization':f'Bearer {token}',
+              'Accept':'application/vnd.github+json',
+              'X-GitHub-Api-Version':'2022-11-28',
+              'User-Agent':'AINA-Final-Visual-Lock',
+          }
+          url=f'https://api.github.com/repos/{repository}/actions/runs/{run_id}/artifacts'
+          with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=60) as response:
+              payload=json.load(response)
+          artifacts=[item for item in payload.get('artifacts',[]) if not item.get('expired')]
+          if not artifacts:
+              raise SystemExit(f'No live artifact found for run {run_id}')
+          preferred=[item for item in artifacts if 'IDENTITY' in item['name'].upper() and ('LOCK' in item['name'].upper() or 'CANDIDATE' in item['name'].upper())]
+          artifact=max(preferred or artifacts,key=lambda item:item.get('created_at',''))
+          request=urllib.request.Request(artifact['archive_download_url'],headers=headers)
+          with urllib.request.urlopen(request,timeout=180) as response:
+              data=response.read()
+          pathlib.Path('source_candidate.zip').write_bytes(data)
+          pathlib.Path('source_candidate_artifact.json').write_text(json.dumps(artifact,indent=2))
+          print(json.dumps({'artifact_id':artifact['id'],'artifact_name':artifact['name'],'bytes':len(data)},indent=2))
+          PY
+          unzip -q source_candidate.zip -d source_candidate
+          python - <<'PY'
+          from pathlib import Path
+          import shutil, json
+          root=Path('source_candidate')
+          blends=[p for p in root.rglob('*.blend') if p.is_file()]
+          if not blends:
+              raise SystemExit('Candidate artifact contains no BLEND file')
+          def blend_score(path):
+              name=path.name.upper()
+              score=0
+              if 'LOCK' in name: score+=20
+              if 'CANDIDATE' in name: score+=15
+              if 'IDENTITY' in name: score+=8
+              if 'QA' in name or 'PROBE' in name: score-=12
+              return (score,path.stat().st_size)
+          blend=max(blends,key=blend_score)
+          shutil.copy2(blend,'source_candidate.blend')
+
+          pngs=[p for p in root.rglob('*.png') if p.is_file()]
+          def choose(view):
+              candidates=[]
+              for path in pngs:
+                  name=path.name.upper()
+                  if any(word in name for word in ('CONTACT','SHEET','APPROVED','LANDMARK','QA')):
+                      continue
+                  if any(word in name for word in ('HAPPY','SAD','ANGRY','BLINK','AA','OU','SMILE')):
+                      continue
+                  score=0
+                  if 'NEUTRAL' in name: score+=12
+                  if 'LOCK' in name or 'CANDIDATE' in name: score+=5
+                  if view=='front' and 'FRONT' in name and not any(word in name for word in ('LEFT','RIGHT','3Q','QUARTER','SIDE','PROFILE')): score+=30
+                  if view=='three_quarter' and any(word in name for word in ('THREE_QUARTER','3Q','Q3')): score+=30
+                  if view=='side' and any(word in name for word in ('SIDE','PROFILE')): score+=30
+                  if score>0: candidates.append((score,path.stat().st_size,path))
+              if not candidates:
+                  raise SystemExit(f'No source render found for {view}; available={[p.name for p in pngs[:40]]}')
+              return max(candidates)[2]
+          Path('source_views').mkdir(exist_ok=True)
+          selected={}
+          for view in ('front','three_quarter','side'):
+              path=choose(view)
+              destination=Path('source_views')/f'{view}.png'
+              shutil.copy2(path,destination)
+              selected[view]=str(path)
+          Path('source_views/selection.json').write_text(json.dumps({'blend':str(blend),'views':selected},indent=2))
+          print(json.dumps({'blend':str(blend),'views':selected},indent=2))
+          PY
+          test -s source_candidate.blend
+          test -s source_views/front.png
+          test -s source_views/three_quarter.png
+          test -s source_views/side.png
+
+      - name: Extract approved and candidate multi-view landmarks
+        run: |
+          set -euo pipefail
+          mkdir -p output_final_visual_lock/QA output_final_visual_lock/Preview
+          python src/extract_aina_vitruvian_fit_landmarks.py \
+            --approved-front references/AINA_APPROVED_FRONT.jpg \
+            --approved-q3 references/AINA_APPROVED_3Q.jpg \
+            --approved-side references/AINA_APPROVED_SIDE.jpg \
+            --model-front source_views/front.png \
+            --model-q3 source_views/three_quarter.png \
+            --model-side source_views/side.png \
+            --front-target references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --out output_final_visual_lock/QA
+          test -s output_final_visual_lock/QA/AINA_VITRUVIAN_FIT_LANDMARKS.json
+
+      - name: Install Blender 4.5.12 LTS and software rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Apply bounded correction to the actual Basis and all FACS keys
+        run: |
+          set +e
+          xvfb-run -a -s '-screen 0 1600x900x24' "$BLENDER" source_candidate.blend \
+            --background --python-exit-code 1 \
+            --python src/blender/aina_vitruvian_final_visual_lock.py -- \
+            --landmarks output_final_visual_lock/QA/AINA_VITRUVIAN_FIT_LANDMARKS.json \
+            --out output_final_visual_lock \
+            2>&1 | tee output_final_visual_lock/QA/AINA_FINAL_VISUAL_LOCK_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output_final_visual_lock/QA/AINA_FINAL_VISUAL_LOCK_EXIT.txt
+          exit "$code"
+
+      - name: Build approved-reference and real-expression review sheets
+        if: success()
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageDraw
+          root=Path('output_final_visual_lock')
+          pairs=[
+              ('references/AINA_APPROVED_FRONT.jpg',root/'Preview/AINA_FINAL_LOCK_NEUTRAL_FRONT.png','FRONT'),
+              ('references/AINA_APPROVED_3Q.jpg',root/'Preview/AINA_FINAL_LOCK_NEUTRAL_THREE_QUARTER.png','3Q'),
+              ('references/AINA_APPROVED_SIDE.jpg',root/'Preview/AINA_FINAL_LOCK_NEUTRAL_SIDE.png','SIDE'),
+          ]
+          panels=[]
+          for ref_path,model_path,label in pairs:
+              ref=Image.open(ref_path).convert('RGB'); model=Image.open(model_path).convert('RGB')
+              ref.thumbnail((390,390)); model.thumbnail((390,390))
+              panel=Image.new('RGB',(800,440),'white')
+              panel.paste(ref,((390-ref.width)//2,5)); panel.paste(model,(400+(390-model.width)//2,5))
+              draw=ImageDraw.Draw(panel); draw.text((10,410),f'APPROVED {label}',fill='black'); draw.text((410,410),f'REAL FINAL-LOCK {label}',fill='black')
+              panels.append(panel)
+          sheet=Image.new('RGB',(800,1320),'white')
+          for i,panel in enumerate(panels): sheet.paste(panel,(0,i*440))
+          sheet.save(root/'QA/AINA_APPROVED_VS_FINAL_REAL_VISUAL_LOCK.png')
+
+          names=['NEUTRAL_FRONT','NEUTRAL_LEFT_45','NEUTRAL_RIGHT_45','HAPPY','SAD','ANGRY','BLINK','AA','OU']
+          expression_panels=[]
+          for name in names:
+              path=root/'Preview'/f'AINA_FINAL_LOCK_{name}.png'
+              if not path.exists(): continue
+              image=Image.open(path).convert('RGB'); image.thumbnail((360,360))
+              panel=Image.new('RGB',(380,400),'white'); panel.paste(image,((380-image.width)//2,4)); ImageDraw.Draw(panel).text((8,375),name,fill='black'); expression_panels.append(panel)
+          expression_sheet=Image.new('RGB',(1140,1200),'white')
+          for i,panel in enumerate(expression_panels): expression_sheet.paste(panel,((i%3)*380,(i//3)*400))
+          expression_sheet.save(root/'QA/AINA_FINAL_REAL_EXPRESSION_REVIEW.png')
+          PY
+          test -s output_final_visual_lock/QA/AINA_APPROVED_VS_FINAL_REAL_VISUAL_LOCK.png
+          test -s output_final_visual_lock/QA/AINA_FINAL_REAL_EXPRESSION_REVIEW.png
+
+      - name: Enforce topology, morph and quantitative candidate gates
+        if: success()
+        run: |
+          set -euo pipefail
+          test -s output_final_visual_lock/AINA_IDENTITY_MASTER_VISUAL_LOCK_CANDIDATE.blend
+          test -s output_final_visual_lock/AINA_IDENTITY_MASTER_VISUAL_LOCK_CANDIDATE.glb
+          test -s output_final_visual_lock/QA/AINA_FINAL_VISUAL_LOCK_REPORT.json
+          for file in \
+            AINA_FINAL_LOCK_NEUTRAL_FRONT.png \
+            AINA_FINAL_LOCK_NEUTRAL_THREE_QUARTER.png \
+            AINA_FINAL_LOCK_NEUTRAL_SIDE.png \
+            AINA_FINAL_LOCK_NEUTRAL_LEFT_45.png \
+            AINA_FINAL_LOCK_NEUTRAL_RIGHT_45.png \
+            AINA_FINAL_LOCK_HAPPY.png \
+            AINA_FINAL_LOCK_SAD.png \
+            AINA_FINAL_LOCK_ANGRY.png \
+            AINA_FINAL_LOCK_BLINK.png \
+            AINA_FINAL_LOCK_AA.png \
+            AINA_FINAL_LOCK_OU.png; do
+              test -s "output_final_visual_lock/Preview/$file"
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path('output_final_visual_lock/QA/AINA_FINAL_VISUAL_LOCK_REPORT.json').read_text())
+          assert report['real_3d_model'] is True
+          assert report['replacement_effect_art_generated'] is False
+          assert report['topology_changed'] is False
+          assert report['vertices_before']==report['vertices_after']==17161
+          assert report['shape_key_count'] >= 26
+          assert report['shape_keys_before']==report['shape_keys_after']
+          assert report['convergence']['expression_delta_max_drift'] <= 2.5e-6
+          assert report['identity_lock'] is False
+          assert report['visual_identity_lock'] is False
+          assert report['vrm_exported'] is False
+          print(json.dumps({
+              'vertices':report['vertices_after'],
+              'shape_key_count':report['shape_key_count'],
+              'expression_delta_max_drift':report['convergence']['expression_delta_max_drift'],
+              'final_normalized_landmark_rmse':report['final_normalized_landmark_rmse'],
+              'quantitative_identity_gate':report['quantitative_identity_gate'],
+              'manual_visual_gate_required':report['manual_visual_gate_required'],
+          },indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-FINAL-REAL-VISUAL-LOCK-CANDIDATE
+          path: |
+            source_candidate_artifact.json
+            source_views/selection.json
+            output_final_visual_lock/**
+          if-no-files-found: error
+          retention-days: 30
