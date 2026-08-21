@@ -1,0 +1,246 @@
+name: Build AINA Approved-Appearance Final VRM
+
+on:
+  pull_request:
+    branches: [ci/aina-textured-final-base]
+    paths:
+      - RUN_AINA_TEXTURED_FINAL
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: aina-approved-appearance-final
+  cancel-in-progress: true
+
+jobs:
+  textured_final:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install archive and Git LFS tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git-lfs unzip jq zip
+          git lfs install
+
+      - name: Download the successful integrated dense AINA artifact
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,pathlib,time,urllib.request
+          repository=os.environ['GITHUB_REPOSITORY'];token=os.environ['GH_TOKEN']
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'AINA-Approved-Appearance'}
+          workflow='build_aina_integrated_final.yml';selected=None
+          for attempt in range(70):
+              url=f'https://api.github.com/repos/{repository}/actions/workflows/{workflow}/runs?per_page=20'
+              with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=60) as response:payload=json.load(response)
+              runs=[run for run in payload.get('workflow_runs',[]) if run.get('head_branch')=='ci/aina-integrated-final-run']
+              successful=[run for run in runs if run.get('status')=='completed' and run.get('conclusion')=='success']
+              if successful:selected=max(successful,key=lambda run:run.get('created_at',''));break
+              failed=[run for run in runs if run.get('status')=='completed' and run.get('conclusion') not in (None,'success')]
+              active=[run for run in runs if run.get('status')!='completed']
+              if failed and not active:raise SystemExit(f'Integrated workflow failed: {failed[0].get("html_url")}')
+              print(f'Waiting for integrated artifact {attempt+1}/70');time.sleep(15)
+          if selected is None:raise SystemExit('Timed out waiting for integrated AINA workflow')
+          url=f'https://api.github.com/repos/{repository}/actions/runs/{selected["id"]}/artifacts'
+          with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=60) as response:payload=json.load(response)
+          artifacts=[item for item in payload.get('artifacts',[]) if not item.get('expired') and item.get('name')=='AINA-INTEGRATED-FINAL-CANDIDATE']
+          if not artifacts:raise SystemExit(f'No integrated artifact on run {selected["id"]}')
+          artifact=max(artifacts,key=lambda item:item.get('created_at',''))
+          with urllib.request.urlopen(urllib.request.Request(artifact['archive_download_url'],headers=headers),timeout=300) as response:data=response.read()
+          pathlib.Path('integrated.zip').write_bytes(data);pathlib.Path('integrated_run.json').write_text(json.dumps({'run':selected,'artifact':artifact},indent=2))
+          print(json.dumps({'run_id':selected['id'],'artifact_id':artifact['id'],'bytes':len(data)},indent=2))
+          PY
+          unzip -q integrated.zip -d integrated
+          python - <<'PY'
+          from pathlib import Path
+          import json,shutil
+          root=Path('integrated')
+          def pick(pattern,tokens):
+              files=[p for p in root.rglob(pattern) if p.is_file()]
+              if not files:raise SystemExit(f'Missing {pattern}')
+              return max(files,key=lambda p:(sum(token in p.name.upper() for token in tokens),p.stat().st_size))
+          dense_blend=pick('AINA_DENSE_IDENTITY_MASTER.blend',('DENSE','IDENTITY'))
+          sparse=pick('AINA_VITRUVIAN_FIT_LANDMARKS.json',('LANDMARKS',))
+          dense=pick('AINA_DENSE_FACE_LANDMARKS.json',('DENSE','LANDMARKS'))
+          report=pick('AINA_DENSE_IDENTITY_REPORT.json',('DENSE','REPORT'))
+          shutil.copy2(dense_blend,'AINA_DENSE_IDENTITY_MASTER.blend')
+          shutil.copy2(sparse,'AINA_SPARSE_LANDMARKS.json')
+          shutil.copy2(dense,'AINA_DENSE_LANDMARKS.json')
+          shutil.copy2(report,'AINA_DENSE_IDENTITY_REPORT.json')
+          Path('integrated_selection.json').write_text(json.dumps({'dense_blend':str(dense_blend),'sparse_landmarks':str(sparse),'dense_landmarks':str(dense),'report':str(report)},indent=2))
+          PY
+          test -s AINA_DENSE_IDENTITY_MASTER.blend
+          test -s AINA_SPARSE_LANDMARKS.json
+          test -s AINA_DENSE_LANDMARKS.json
+          test -s AINA_DENSE_IDENTITY_REPORT.json
+
+      - name: Materialize the approved AINA appearance references
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+          test -s references/AINA_APPROVED_FRONT.jpg
+          test -s references/AINA_APPROVED_3Q.jpg
+          test -s references/AINA_APPROVED_SIDE.jpg
+
+      - name: Fetch the matching CC0 rigged Vitruvian body
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/ibrews/VitruvianGodot.git vendor/VitruvianGodot
+          git -C vendor/VitruvianGodot lfs install --local
+          git -C vendor/VitruvianGodot lfs pull --include='godot_project/vitruvian_body.glb'
+          test -s vendor/VitruvianGodot/godot_project/vitruvian_body.glb
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('vendor/VitruvianGodot/godot_project/vitruvian_body.glb');assert p.read_bytes()[:4]==b'glTF';print({'body_bytes':p.stat().st_size})
+          PY
+
+      - name: Install Blender 4.5.12 LTS and software rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Project approved appearance, add real brows/lashes and rebuild final VRM
+        run: |
+          set +e
+          mkdir -p output_textured_final/QA output_textured_final/Preview
+          xvfb-run -a -s '-screen 0 1600x1000x24' "$BLENDER" AINA_DENSE_IDENTITY_MASTER.blend \
+            --background --python-exit-code 1 \
+            --python src/blender/aina_vitruvian_final_vrm_production_v7.py -- \
+            --body-glb vendor/VitruvianGodot/godot_project/vitruvian_body.glb \
+            --landmarks AINA_SPARSE_LANDMARKS.json \
+            --dense-landmarks AINA_DENSE_LANDMARKS.json \
+            --approved-front references/AINA_APPROVED_FRONT.jpg \
+            --approved-q3 references/AINA_APPROVED_3Q.jpg \
+            --approved-side references/AINA_APPROVED_SIDE.jpg \
+            --visual-report AINA_DENSE_IDENTITY_REPORT.json \
+            --out output_textured_final \
+            2>&1 | tee output_textured_final/QA/AINA_TEXTURED_FINAL_BUILD.log
+          code=${PIPESTATUS[0]};echo "$code" > output_textured_final/QA/AINA_TEXTURED_FINAL_EXIT.txt;exit "$code"
+
+      - name: Build final approved-versus-real, expression and full-character review sheets
+        if: success()
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageDraw
+          root=Path('output_textured_final');preview=root/'Preview';qa=root/'QA'
+          pairs=[(Path('references/AINA_APPROVED_FRONT.jpg'),preview/'AINA_FINAL_PORTRAIT_NEUTRAL.png','APPROVED FRONT','TEXTURED REAL FRONT'),(Path('references/AINA_APPROVED_3Q.jpg'),preview/'AINA_FINAL_PORTRAIT_NEUTRAL_3Q.png','APPROVED 3Q','TEXTURED REAL 3Q'),(Path('references/AINA_APPROVED_SIDE.jpg'),preview/'AINA_FINAL_PORTRAIT_NEUTRAL_SIDE.png','APPROVED SIDE','TEXTURED REAL SIDE')]
+          rows=[]
+          for ref_path,model_path,left_label,right_label in pairs:
+              ref=Image.open(ref_path).convert('RGB');model=Image.open(model_path).convert('RGB');ref.thumbnail((430,430));model.thumbnail((430,430));row=Image.new('RGB',(880,475),'white');row.paste(ref,((435-ref.width)//2,5));row.paste(model,(440+(435-model.width)//2,5));draw=ImageDraw.Draw(row);draw.text((10,445),left_label,fill='black');draw.text((450,445),right_label,fill='black');rows.append(row)
+          identity=Image.new('RGB',(880,1425),'white')
+          for i,row in enumerate(rows):identity.paste(row,(0,i*475))
+          identity.save(qa/'AINA_TEXTURED_APPROVED_VS_REAL_IDENTITY.png')
+          names=['NEUTRAL','HAPPY','SAD','ANGRY','SURPRISED','BLINK','AA','OU'];panels=[]
+          for name in names:
+              image=Image.open(preview/f'AINA_FINAL_PORTRAIT_{name}.png').convert('RGB');image.thumbnail((360,360));panel=Image.new('RGB',(380,400),'white');panel.paste(image,((380-image.width)//2,4));ImageDraw.Draw(panel).text((8,375),name,fill='black');panels.append(panel)
+          expressions=Image.new('RGB',(1520,800),'white')
+          for i,panel in enumerate(panels):expressions.paste(panel,((i%4)*380,(i//4)*400))
+          expressions.save(qa/'AINA_TEXTURED_52_EXPRESSION_VISUAL_QA.png')
+          full=Image.new('RGB',(1120,780),'white')
+          for i,name in enumerate(['AINA_FINAL_FULL_FRONT.png','AINA_FINAL_FULL_THREE_QUARTER.png']):
+              image=Image.open(preview/name).convert('RGB');image.thumbnail((540,740));panel=Image.new('RGB',(560,780),'white');panel.paste(image,((560-image.width)//2,4));ImageDraw.Draw(panel).text((8,755),name,fill='black');full.paste(panel,(i*560,0))
+          full.save(qa/'AINA_TEXTURED_FULL_CHARACTER_QA.png')
+          PY
+          test -s output_textured_final/QA/AINA_TEXTURED_APPROVED_VS_REAL_IDENTITY.png
+          test -s output_textured_final/QA/AINA_TEXTURED_52_EXPRESSION_VISUAL_QA.png
+          test -s output_textured_final/QA/AINA_TEXTURED_FULL_CHARACTER_QA.png
+
+      - name: Enforce appearance, 52/52, 18/18, humanoid, spring and clean-reimport gates
+        if: success()
+        run: |
+          set -euo pipefail
+          test -s output_textured_final/AINA_MASTER.blend
+          test -s output_textured_final/AINA.vrm
+          test -s output_textured_final/QA/AINA_FINAL_VRM_PRODUCTION_REPORT.json
+          test -s output_textured_final/QA/AINA_VRM_CLEAN_REIMPORT.blend
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path('output_textured_final/QA/AINA_FINAL_VRM_PRODUCTION_REPORT.json').read_text());pre=report['pre_reimport'];reimport=report['reimport'];binary=reimport['binary'];surface=reimport['approved_visual_surface']
+          assert report['real_3d_model'] is True and report['replacement_effect_art_generated'] is False
+          assert report['technical_release_gate'] is True and report['input_visual_quantitative_gate'] is True
+          assert pre['skin_vertices']==17161 and pre['arkit']['created']==52
+          assert pre['arkit']['missing']==[] and pre['arkit']['zero_or_placeholder']==[]
+          assert pre['hair_object_count']>=120
+          assert surface['approved_face_projection']['coverage_fraction']>=0.26
+          assert surface['real_brow_lash_geometry']['object_count']>=20
+          assert reimport['approved_visual_surface_pass'] is True
+          assert reimport['approved_face_color_imported'] is True
+          assert binary['vrm_spec_version']=='1.0' and binary['arkit_52_count']==52 and binary['preset_expression_count']==18
+          assert binary['missing_required_humanoid']==[] and binary['spring_count']>=1
+          assert reimport['imported_arkit_52_count']==52 and reimport['imported_arkit_52_missing']==[] and reimport['pass'] is True
+          assert reimport.get('alias_bytes_equal') is True
+          assert report['identity_lock'] is False and report['visual_identity_lock'] is False and report['production_release'] is False
+          print(json.dumps({'technical_release_gate':True,'vrm_bytes':report['vrm_bytes'],'vertices':pre['skin_vertices'],'arkit_52':52,'presets':18,'humanoid_bones':binary['humanoid_bone_count'],'springs':binary['spring_count'],'hair_and_brow_lash_objects':pre['hair_object_count'],'face_color_coverage':surface['approved_face_projection']['coverage_fraction'],'face_color_reimported':True,'clean_reimport':True},indent=2))
+          PY
+
+      - name: Write appearance-final candidate status
+        if: success()
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path('output_textured_final/QA/AINA_FINAL_VRM_PRODUCTION_REPORT.json').read_text());surface=report['reimport']['approved_visual_surface']
+          status={'product':'AINA Approved-Appearance Final Candidate','real_3d_model':True,'replacement_effect_art_generated':False,'approved_reference_projected_to_real_mesh':True,'vertex_color_coverage':surface['approved_face_projection']['coverage_fraction'],'real_brow_lash_objects':surface['real_brow_lash_geometry']['object_count'],'technical_vrm_gate':report['technical_release_gate'],'arkit_52':report['reimport']['binary']['arkit_52_count'],'vrm_presets':report['reimport']['binary']['preset_expression_count'],'clean_reimport':report['reimport']['pass'],'identity_lock':False,'visual_identity_lock':False,'production_release':False,'manual_actual_render_review_required':True,'next_gate':'Inspect the attached actual textured front/3Q/side, expressions and full-character renders. If accepted, publish these exact unchanged binaries as the locked final release.'}
+          Path('output_textured_final/QA/AINA_TEXTURED_FINAL_STATUS.json').write_text(json.dumps(status,indent=2));print(json.dumps(status,indent=2))
+          PY
+
+      - name: Package and publish the approved-appearance candidate
+        if: success()
+        run: |
+          set -euo pipefail
+          mkdir -p AINA_TEXTURED_FINAL_CANDIDATE
+          cp output_textured_final/AINA.vrm AINA_TEXTURED_FINAL_CANDIDATE/
+          cp output_textured_final/AINA_MASTER.blend AINA_TEXTURED_FINAL_CANDIDATE/
+          cp AINA_DENSE_IDENTITY_MASTER.blend AINA_TEXTURED_FINAL_CANDIDATE/
+          cp AINA_DENSE_IDENTITY_REPORT.json AINA_TEXTURED_FINAL_CANDIDATE/
+          cp output_textured_final/QA/AINA_FINAL_VRM_PRODUCTION_REPORT.json AINA_TEXTURED_FINAL_CANDIDATE/
+          cp output_textured_final/QA/AINA_TEXTURED_FINAL_STATUS.json AINA_TEXTURED_FINAL_CANDIDATE/
+          cp output_textured_final/QA/AINA_TEXTURED_APPROVED_VS_REAL_IDENTITY.png AINA_TEXTURED_FINAL_CANDIDATE/
+          cp output_textured_final/QA/AINA_TEXTURED_52_EXPRESSION_VISUAL_QA.png AINA_TEXTURED_FINAL_CANDIDATE/
+          cp output_textured_final/QA/AINA_TEXTURED_FULL_CHARACTER_QA.png AINA_TEXTURED_FINAL_CANDIDATE/
+          cp output_textured_final/QA/AINA_VRM_CLEAN_REIMPORT.blend AINA_TEXTURED_FINAL_CANDIDATE/
+          zip -9 -r AINA_TEXTURED_FINAL_CANDIDATE.zip AINA_TEXTURED_FINAL_CANDIDATE
+          gh release delete aina-textured-final-candidate --cleanup-tag -y || true
+          gh release create aina-textured-final-candidate \
+            AINA_TEXTURED_FINAL_CANDIDATE.zip \
+            output_textured_final/AINA.vrm \
+            output_textured_final/QA/AINA_TEXTURED_APPROVED_VS_REAL_IDENTITY.png \
+            output_textured_final/QA/AINA_TEXTURED_52_EXPRESSION_VISUAL_QA.png \
+            output_textured_final/QA/AINA_TEXTURED_FULL_CHARACTER_QA.png \
+            --title 'AINA Approved-Appearance Final Candidate' \
+            --notes 'Real AINA production candidate with the approved front/3Q/side appearance projected onto the true 17,161-vertex facial Mesh as a reimported vertex-colour attribute, real eyebrow and eyelash ribbon geometry, layered silver ribbon hair, 52/52 non-zero ARKit controls, 18/18 VRM presets, humanoid rig, spring bones and clean Blender reimport. Locks intentionally remain false until the attached actual renders are accepted.'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-TEXTURED-FINAL-CANDIDATE
+          path: |
+            integrated_run.json
+            integrated_selection.json
+            output_textured_final/**
+            AINA_TEXTURED_FINAL_CANDIDATE.zip
+          if-no-files-found: warn
+          retention-days: 30
