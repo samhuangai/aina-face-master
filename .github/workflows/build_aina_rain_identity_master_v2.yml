@@ -1,0 +1,213 @@
+name: Build AINA Rain Identity Master v2
+
+on:
+  pull_request:
+    branches: [ci/aina-identity-master-base]
+    paths:
+      - RUN_AINA_RAIN_IDENTITY_MASTER_V2
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-rain-identity-master-v2
+  cancel-in-progress: true
+
+jobs:
+  rain_identity_v2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+      MPLBACKEND: Agg
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install landmark and image dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy==1.26.4 pillow face-alignment requests
+
+      - name: Materialize approved AINA references
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+          test -s references/AINA_TARGET_3DDFA_SPARSE_68.json
+
+      - name: Download the latest successful Rain Identity Master candidate
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, requests, zipfile, io, shutil
+          from pathlib import Path
+          repository=os.environ['GITHUB_REPOSITORY']
+          token=os.environ['GH_TOKEN']
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}
+          url=f'https://api.github.com/repos/{repository}/actions/artifacts?name=AINA-RAIN-IDENTITY-MASTER&per_page=100'
+          response=requests.get(url,headers=headers,timeout=30); response.raise_for_status()
+          artifacts=[item for item in response.json().get('artifacts',[]) if not item.get('expired')]
+          if not artifacts: raise SystemExit('No successful AINA-RAIN-IDENTITY-MASTER artifact is available')
+          artifact=max(artifacts,key=lambda item:item['id'])
+          archive=requests.get(artifact['archive_download_url'],headers=headers,timeout=180,allow_redirects=True)
+          archive.raise_for_status()
+          root=Path('candidate_artifact')
+          if root.exists(): shutil.rmtree(root)
+          root.mkdir()
+          with zipfile.ZipFile(io.BytesIO(archive.content)) as zf: zf.extractall(root)
+          def find(name):
+              items=list(root.rglob(name))
+              if not items: raise FileNotFoundError(name)
+              return items[0]
+          stable=Path('candidate')
+          stable.mkdir(exist_ok=True)
+          files={
+              'candidate.blend':'AINA_RAIN_IDENTITY_MASTER_CANDIDATE.blend',
+              'front.png':'AINA_RAIN_IDENTITY_MASTER_FRONT.png',
+              'three_quarter.png':'AINA_RAIN_IDENTITY_MASTER_THREE_QUARTER.png',
+              'side.png':'AINA_RAIN_IDENTITY_MASTER_SIDE.png',
+              'candidate_report.json':'AINA_RAIN_IDENTITY_MASTER_REPORT.json',
+          }
+          for destination, source in files.items(): shutil.copy2(find(source),stable/destination)
+          (stable/'artifact_id.txt').write_text(str(artifact['id']))
+          print({'artifact_id':artifact['id'],'size':artifact['size_in_bytes']})
+          PY
+          test -s candidate/candidate.blend
+          test -s candidate/front.png
+          test -s candidate/three_quarter.png
+          test -s candidate/side.png
+
+      - name: Extract the residual landmarks from the actual candidate
+        run: |
+          set -euo pipefail
+          mkdir -p output_rain_identity_v2/QA output_rain_identity_v2/Preview
+          python src/extract_aina_rain_identity_landmarks.py \
+            --approved-front references/AINA_APPROVED_FRONT.jpg \
+            --approved-q3 references/AINA_APPROVED_3Q.jpg \
+            --approved-side references/AINA_APPROVED_SIDE.jpg \
+            --model-front candidate/front.png \
+            --model-q3 candidate/three_quarter.png \
+            --model-side candidate/side.png \
+            --front-target references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --out output_rain_identity_v2/QA
+          test -s output_rain_identity_v2/QA/AINA_RAIN_IDENTITY_LANDMARKS.json
+
+      - name: Install Blender 4.5.12 LTS and software rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Apply the second real-Mesh convergence pass
+        run: |
+          set +e
+          xvfb-run -a -s '-screen 0 1600x900x24' "$BLENDER" \
+            candidate/candidate.blend \
+            --background --python-exit-code 1 \
+            --python src/blender/aina_rain_identity_master_v2.py -- \
+            --landmarks output_rain_identity_v2/QA/AINA_RAIN_IDENTITY_LANDMARKS.json \
+            --out output_rain_identity_v2 \
+            2>&1 | tee output_rain_identity_v2/QA/AINA_RAIN_IDENTITY_MASTER_V2_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output_rain_identity_v2/QA/AINA_RAIN_IDENTITY_MASTER_V2_EXIT.txt
+          exit "$code"
+
+      - name: Build actual-model visual review sheets
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw
+          root=Path('output_rain_identity_v2')
+          pairs=[
+              ('references/AINA_APPROVED_FRONT.jpg',root/'Preview/AINA_RAIN_IDENTITY_MASTER_FRONT.png','FRONT'),
+              ('references/AINA_APPROVED_3Q.jpg',root/'Preview/AINA_RAIN_IDENTITY_MASTER_THREE_QUARTER.png','3Q'),
+              ('references/AINA_APPROVED_SIDE.jpg',root/'Preview/AINA_RAIN_IDENTITY_MASTER_SIDE.png','SIDE'),
+          ]
+          panels=[]
+          for ref_path,model_path,label in pairs:
+              ref=Image.open(ref_path).convert('RGB'); model=Image.open(model_path).convert('RGB')
+              ref.thumbnail((430,430)); model.thumbnail((430,430))
+              panel=Image.new('RGB',(900,480),'white')
+              panel.paste(ref,((440-ref.width)//2,6)); panel.paste(model,(455+(440-model.width)//2,6))
+              draw=ImageDraw.Draw(panel); draw.text((10,450),f'APPROVED AINA {label}',fill='black'); draw.text((465,450),f'RAIN-MESH AINA V2 {label}',fill='black')
+              panels.append(panel)
+          sheet=Image.new('RGB',(900,1440),'white')
+          for i,panel in enumerate(panels): sheet.paste(panel,(0,i*480))
+          sheet.save(root/'QA/AINA_APPROVED_VS_RAIN_IDENTITY_MASTER_V2.png')
+
+          before=Image.open('candidate/front.png').convert('RGB')
+          after=Image.open(root/'Preview/AINA_RAIN_IDENTITY_MASTER_FRONT.png').convert('RGB')
+          clay=Image.open(root/'Preview/AINA_RAIN_IDENTITY_MASTER_CLAY_FRONT.png').convert('RGB')
+          sheet2=Image.new('RGB',(1440,520),'white')
+          for i,(image,label) in enumerate(((before,'V1'),(after,'V2 BEAUTY'),(clay,'V2 CLAY'))):
+              image.thumbnail((460,460)); sheet2.paste(image,(i*480+(480-image.width)//2,5)); ImageDraw.Draw(sheet2).text((i*480+10,490),label,fill='black')
+          sheet2.save(root/'QA/AINA_RAIN_IDENTITY_V1_VS_V2.png')
+          PY
+          test -s output_rain_identity_v2/QA/AINA_APPROVED_VS_RAIN_IDENTITY_MASTER_V2.png
+          test -s output_rain_identity_v2/QA/AINA_RAIN_IDENTITY_V1_VS_V2.png
+
+      - name: Enforce same-topology and preservation gates
+        run: |
+          set -euo pipefail
+          test -s output_rain_identity_v2/AINA_RAIN_IDENTITY_MASTER_V2.blend
+          test -s output_rain_identity_v2/AINA_RAIN_IDENTITY_MASTER_V2.glb
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          previous=json.loads(Path('candidate/candidate_report.json').read_text())
+          report=json.loads(Path('output_rain_identity_v2/QA/AINA_RAIN_IDENTITY_MASTER_V2_REPORT.json').read_text())
+          assert report['real_3d_model'] is True
+          assert report['replacement_effect_art_generated'] is False
+          assert report['same_topology_as_candidate'] is True
+          assert report['topology_changed'] is False
+          assert report['armature_preserved'] is True
+          assert report['skin_weights_preserved'] is True
+          assert report['identity_lock'] is False
+          assert report['visual_identity_lock'] is False
+          assert report['candidate'] is True
+          assert report['vertices'] == previous['vertices']
+          assert report['head_region_vertices'] > 800
+          assert report['v2_new_displacement_max_m'] < 0.035
+          preservation=report['fitting']['expression_preservation']
+          assert preservation['shape_delta_preservation_max_m'] < 1e-5
+          print(json.dumps({
+              'vertices':report['vertices'],
+              'head_region_vertices':report['head_region_vertices'],
+              'available_views':report['fitting']['available_views'],
+              'final_metrics':report['fitting']['final_metrics'],
+              'v2_new_displacement_max_m':report['v2_new_displacement_max_m'],
+              'shape_preservation':preservation,
+          },indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-RAIN-IDENTITY-MASTER-V2
+          path: |
+            output_rain_identity_v2/**
+            candidate/artifact_id.txt
+          if-no-files-found: error
+          retention-days: 30
