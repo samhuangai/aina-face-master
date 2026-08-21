@@ -1,0 +1,94 @@
+name: Probe AINA Rain GLB Quick
+
+on:
+  pull_request:
+    branches: [ci/aina-rain-quick-base]
+    paths:
+      - RUN_AINA_RAIN_LUMINA_QUICK_PROBE
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-rain-lumina-quick
+  cancel-in-progress: true
+
+jobs:
+  quick_probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch Rain GLB conversion and CC-BY attribution
+        run: |
+          set -euo pipefail
+          mkdir -p source
+          curl -fL --retry 3 https://raw.githubusercontent.com/mnanimat/software_mnanimat3d/main/assets/characters/rain/rain-lumina.glb -o source/rain-lumina.glb
+          curl -fL --retry 3 https://raw.githubusercontent.com/mnanimat/software_mnanimat3d/main/assets/characters/rain/ATTRIBUTION.txt -o source/ATTRIBUTION.txt
+          test -s source/rain-lumina.glb
+          grep -q 'CC BY 4.0' source/ATTRIBUTION.txt
+      - name: Install Blender 4.5.12 LTS and software rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+      - name: Import and render the actual converted Rain rig
+        run: |
+          set +e
+          mkdir -p output_rain_quick/Preview output_rain_quick/QA
+          xvfb-run -a -s '-screen 0 1400x800x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_rain_lumina_quick_probe.py -- \
+            --source source/rain-lumina.glb --attribution source/ATTRIBUTION.txt --out output_rain_quick \
+            2>&1 | tee output_rain_quick/QA/AINA_RAIN_QUICK_BUILD.log
+          code=${PIPESTATUS[0]}; echo "$code" > output_rain_quick/QA/AINA_RAIN_QUICK_EXIT.txt; exit "$code"
+      - name: Build four-view sheets
+        if: success()
+        run: |
+          python -m pip install pillow
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageDraw
+          preview=Path('output_rain_quick/Preview'); qa=Path('output_rain_quick/QA')
+          names=['Y_POS','Y_NEG','Y_POS_X_POS_3Q','Y_NEG_X_POS_3Q']
+          for prefix in ('BEAUTY','CLAY'):
+              sheet=Image.new('RGB',(520*2,560*2),'white')
+              for i,name in enumerate(names):
+                  p=preview/f'AINA_RAIN_{prefix}_{name}.png'; im=Image.open(p).convert('RGB'); im.thumbnail((500,500))
+                  panel=Image.new('RGB',(520,560),'white'); panel.paste(im,((520-im.width)//2,5)); ImageDraw.Draw(panel).text((8,530),f'{prefix} {name}',fill='black')
+                  sheet.paste(panel,((i%2)*520,(i//2)*560))
+              sheet.save(qa/f'AINA_RAIN_QUICK_{prefix}_SHEET.png')
+          PY
+      - name: Enforce quick real-model gates
+        if: success()
+        run: |
+          set -euo pipefail
+          test -s output_rain_quick/AINA_RAIN_OFFICIAL_RIG_PROBE.blend
+          test -s output_rain_quick/QA/AINA_RAIN_OFFICIAL_RIG_PROBE_REPORT.json
+          test -s output_rain_quick/QA/AINA_RAIN_QUICK_BEAUTY_SHEET.png
+          test -s output_rain_quick/QA/AINA_RAIN_QUICK_CLAY_SHEET.png
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('output_rain_quick/QA/AINA_RAIN_OFFICIAL_RIG_PROBE_REPORT.json').read_text())
+          assert d['real_3d_model'] is True
+          assert d['source_license']=='CC BY 4.0'
+          assert d['replacement_effect_art_generated'] is False
+          assert d['total_vertices']>10000
+          print(json.dumps({'vertices':d['total_vertices'],'triangles':d['total_triangles'],'shape_keys':d['shape_key_count'],'head':d['head_reference']},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-RAIN-GLB-QUICK-PROBE
+          path: output_rain_quick/**
+          if-no-files-found: error
+          retention-days: 30
