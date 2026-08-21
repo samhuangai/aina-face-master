@@ -1,0 +1,146 @@
+name: Probe AINA Blender Studio Rain Identity Base
+
+on:
+  pull_request:
+    branches: [ci/aina-identity-master-base]
+    paths:
+      - RUN_AINA_RAIN_OFFICIAL_RIG_PROBE
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-rain-official-rig-probe
+  cancel-in-progress: true
+
+jobs:
+  rain_base_probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch reproducible Rain v3 source package and attribution
+        run: |
+          set -euo pipefail
+          mkdir -p source
+          curl -fL --retry 3 \
+            https://raw.githubusercontent.com/mnanimat/software_mnanimat3d/main/assets/characters/rain/rain-v33.zip \
+            -o source/rain-v33.zip
+          curl -fL --retry 3 \
+            https://raw.githubusercontent.com/mnanimat/software_mnanimat3d/main/assets/characters/rain/ATTRIBUTION.txt \
+            -o source/ATTRIBUTION.txt
+          grep -q 'Rain Rig' source/ATTRIBUTION.txt
+          grep -q 'CC BY 4.0' source/ATTRIBUTION.txt
+          unzip -q source/rain-v33.zip -d source/rain
+          RAIN_BLEND=$(find source/rain -type f -name '*.blend' | head -n 1)
+          test -n "$RAIN_BLEND"
+          test -s "$RAIN_BLEND"
+          echo "RAIN_BLEND=$RAIN_BLEND" >> "$GITHUB_ENV"
+          cp source/ATTRIBUTION.txt source/rain/ATTRIBUTION.txt
+
+      - name: Install Blender 4.5.12 LTS and software rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 \
+            libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 2 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Open the actual Rain rig and render beauty plus clay head views
+        run: |
+          set +e
+          mkdir -p output_rain_base_probe/Preview output_rain_base_probe/QA
+          xvfb-run -a -s '-screen 0 1800x1000x24' "$BLENDER" "$RAIN_BLEND" \
+            --background --python-exit-code 1 \
+            --python src/blender/aina_rain_official_rig_probe.py -- \
+            --source "$RAIN_BLEND" \
+            --attribution source/ATTRIBUTION.txt \
+            --out output_rain_base_probe \
+            2>&1 | tee output_rain_base_probe/QA/AINA_RAIN_OFFICIAL_RIG_PROBE_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output_rain_base_probe/QA/AINA_RAIN_OFFICIAL_RIG_PROBE_EXIT.txt
+          exit "$code"
+
+      - name: Build real-model beauty and clay contact sheets
+        if: success()
+        run: |
+          python -m pip install pillow
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw
+          preview=Path('output_rain_base_probe/Preview')
+          qa=Path('output_rain_base_probe/QA')
+          names=['Y_POS','Y_NEG','X_POS','X_NEG','Y_POS_X_POS_3Q','Y_POS_X_NEG_3Q','Y_NEG_X_POS_3Q','Y_NEG_X_NEG_3Q']
+          for prefix in ('BEAUTY','CLAY'):
+              panels=[]
+              for name in names:
+                  path=preview/f'AINA_RAIN_{prefix}_{name}.png'
+                  image=Image.open(path).convert('RGB'); image.thumbnail((360,360))
+                  panel=Image.new('RGB',(380,400),'white')
+                  panel.paste(image,((380-image.width)//2,5))
+                  ImageDraw.Draw(panel).text((8,375),f'{prefix} {name}',fill='black')
+                  panels.append(panel)
+              sheet=Image.new('RGB',(380*4,400*2),'white')
+              for index,panel in enumerate(panels):
+                  sheet.paste(panel,((index%4)*380,(index//4)*400))
+              sheet.save(qa/f'AINA_RAIN_{prefix}_HEAD_CONTACT_SHEET.png')
+          PY
+
+      - name: Enforce CC-BY source and real-rig probe gates
+        if: success()
+        run: |
+          set -euo pipefail
+          test -s output_rain_base_probe/AINA_RAIN_OFFICIAL_RIG_PROBE.blend
+          test -s output_rain_base_probe/QA/AINA_RAIN_OFFICIAL_RIG_PROBE_REPORT.json
+          test -s output_rain_base_probe/QA/AINA_RAIN_BEAUTY_HEAD_CONTACT_SHEET.png
+          test -s output_rain_base_probe/QA/AINA_RAIN_CLAY_HEAD_CONTACT_SHEET.png
+          for prefix in BEAUTY CLAY; do
+            for view in Y_POS Y_NEG X_POS X_NEG Y_POS_X_POS_3Q Y_POS_X_NEG_3Q Y_NEG_X_POS_3Q Y_NEG_X_NEG_3Q; do
+              test -s "output_rain_base_probe/Preview/AINA_RAIN_${prefix}_${view}.png"
+            done
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path('output_rain_base_probe/QA/AINA_RAIN_OFFICIAL_RIG_PROBE_REPORT.json').read_text())
+          assert report['source_license']=='CC BY 4.0'
+          assert report['real_3d_model'] is True
+          assert report['replacement_effect_art_generated'] is False
+          assert report['mesh_modified'] is False
+          assert report['new_vrm_exported'] is False
+          assert report['mesh_object_count'] >= 1
+          assert report['armature_count'] >= 1
+          assert report['total_vertices'] > 10000
+          assert report['identity_lock'] is False
+          assert report['visual_identity_lock'] is False
+          print(json.dumps({
+              'total_vertices':report['total_vertices'],
+              'total_triangles':report['total_triangles'],
+              'shape_key_count':report['shape_key_count'],
+              'head_reference':report['head_reference'],
+              'hidden_hair_for_clay':report['hidden_hair_for_clay'],
+          },indent=2,ensure_ascii=False))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-RAIN-OFFICIAL-RIG-PROBE
+          path: |
+            output_rain_base_probe/**
+            source/ATTRIBUTION.txt
+          if-no-files-found: error
+          retention-days: 30
