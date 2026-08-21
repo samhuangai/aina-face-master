@@ -1,0 +1,168 @@
+name: Build AINA Identity Lock Refinement v2
+
+on:
+  pull_request:
+    branches: [ci/aina-identity-master-base]
+    paths:
+      - RUN_AINA_IDENTITY_LOCK_REFINE_V2
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-identity-lock-refine-v2
+  cancel-in-progress: true
+
+jobs:
+  identity_lock_refine_v2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Materialize the approved AINA references
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+          test -s references/AINA_APPROVED_FRONT.jpg
+          test -s references/AINA_APPROVED_3Q.jpg
+          test -s references/AINA_APPROVED_SIDE.jpg
+
+      - name: Fetch the untouched CC0 Vitruvian FACS head
+        run: |
+          set -euo pipefail
+          mkdir -p source
+          curl -fL --retry 3 \
+            https://raw.githubusercontent.com/ibrews/VitruvianGodot/main/godot_project/vitruvian_head.glb \
+            -o source/vitruvian_head.glb
+          test -s source/vitruvian_head.glb
+
+      - name: Install Blender 4.5.12 LTS and software rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 \
+            libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 2 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Apply the bounded real-Mesh refinement and render expressions
+        run: |
+          set +e
+          mkdir -p output_identity_lock_refine_v2/Preview output_identity_lock_refine_v2/QA
+          xvfb-run -a -s '-screen 0 1800x1000x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_vitruvian_identity_lock_refine_v2.py -- \
+            --head source/vitruvian_head.glb \
+            --out output_identity_lock_refine_v2 \
+            2>&1 | tee output_identity_lock_refine_v2/QA/AINA_IDENTITY_LOCK_REFINE_V2_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output_identity_lock_refine_v2/QA/AINA_IDENTITY_LOCK_REFINE_V2_EXIT.txt
+          exit "$code"
+
+      - name: Build approved-reference and expression review sheets
+        if: success()
+        run: |
+          python -m pip install pillow
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw
+          out = Path('output_identity_lock_refine_v2')
+          preview = out / 'Preview'
+          qa = out / 'QA'
+          comparisons = [
+              (Path('references/AINA_APPROVED_FRONT.jpg'), preview / 'AINA_IDENTITY_LOCK_CANDIDATE_FRONT.png', 'FRONT'),
+              (Path('references/AINA_APPROVED_3Q.jpg'), preview / 'AINA_IDENTITY_LOCK_CANDIDATE_THREE_QUARTER.png', '3Q'),
+              (Path('references/AINA_APPROVED_SIDE.jpg'), preview / 'AINA_IDENTITY_LOCK_CANDIDATE_SIDE.png', 'SIDE'),
+          ]
+          panels = []
+          for reference_path, model_path, label in comparisons:
+              reference = Image.open(reference_path).convert('RGB')
+              model = Image.open(model_path).convert('RGB')
+              reference.thumbnail((430, 430)); model.thumbnail((430, 430))
+              panel = Image.new('RGB', (880, 480), 'white')
+              panel.paste(reference, ((435-reference.width)//2, 5))
+              panel.paste(model, (445+(430-model.width)//2, 5))
+              draw = ImageDraw.Draw(panel)
+              draw.text((10, 452), f'APPROVED AINA {label}', fill='black')
+              draw.text((455, 452), f'REAL REFINED V2 {label}', fill='black')
+              panels.append(panel)
+          sheet = Image.new('RGB', (880, 480 * len(panels)), 'white')
+          for index, panel in enumerate(panels): sheet.paste(panel, (0, index * 480))
+          sheet.save(qa / 'AINA_APPROVED_VS_IDENTITY_LOCK_REFINED_V2.png')
+          names = ['FRONT', 'HAPPY', 'SAD', 'ANGRY', 'BLINK', 'AA', 'OU']
+          expression_panels = []
+          for name in names:
+              image = Image.open(preview / f'AINA_IDENTITY_LOCK_CANDIDATE_{name}.png').convert('RGB')
+              image.thumbnail((390, 390))
+              panel = Image.new('RGB', (410, 430), 'white')
+              panel.paste(image, ((410-image.width)//2, 5))
+              ImageDraw.Draw(panel).text((10, 405), name, fill='black')
+              expression_panels.append(panel)
+          expression_sheet = Image.new('RGB', (410 * 4, 430 * 2), 'white')
+          for index, panel in enumerate(expression_panels):
+              expression_sheet.paste(panel, ((index % 4) * 410, (index // 4) * 430))
+          expression_sheet.save(qa / 'AINA_IDENTITY_LOCK_REFINED_V2_EXPRESSION_SHEET.png')
+          PY
+
+      - name: Enforce real-model, topology and expression-delta gates
+        if: success()
+        run: |
+          set -euo pipefail
+          test -s output_identity_lock_refine_v2/AINA_IDENTITY_LOCK_REFINED_V2.blend
+          test -s output_identity_lock_refine_v2/AINA_IDENTITY_LOCK_REFINED_V2.glb
+          test -s output_identity_lock_refine_v2/QA/AINA_IDENTITY_LOCK_CANDIDATE_REPORT.json
+          test -s output_identity_lock_refine_v2/QA/AINA_APPROVED_VS_IDENTITY_LOCK_REFINED_V2.png
+          test -s output_identity_lock_refine_v2/QA/AINA_IDENTITY_LOCK_REFINED_V2_EXPRESSION_SHEET.png
+          for view in FRONT THREE_QUARTER SIDE LEFT_45 RIGHT_45 HAPPY SAD ANGRY BLINK AA OU; do
+            test -s "output_identity_lock_refine_v2/Preview/AINA_IDENTITY_LOCK_CANDIDATE_${view}.png"
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('output_identity_lock_refine_v2/QA/AINA_IDENTITY_LOCK_CANDIDATE_REPORT.json').read_text())
+          assert report['real_3d_model'] is True
+          assert report['replacement_effect_art_generated'] is False
+          assert report['skin_topology_changed'] is False
+          assert report['vertices'] == 17161
+          assert report['triangles'] == 30500
+          assert report['shape_key_count'] == 26
+          assert report['expression_preservation']['shape_delta_preservation_max_m'] < 1.0e-5
+          assert report['expression_preservation']['shape_delta_preservation_rms_m'] < 1.0e-6
+          assert report['candidate_residual']['refinement_v2']['max_additional_displacement_m'] <= 0.00751
+          assert report['candidate_eye_anatomy']['refinement_v2']['iris_vertex_count'] > 500
+          assert report['identity_lock'] is False
+          assert report['visual_identity_lock'] is False
+          assert report['candidate'] is True
+          assert report['vrm_exported'] is False
+          print(json.dumps({
+              'product': report['product'],
+              'vertices': report['vertices'],
+              'shape_key_count': report['shape_key_count'],
+              'additional_max_m': report['candidate_residual']['refinement_v2']['max_additional_displacement_m'],
+              'additional_rms_m': report['candidate_residual']['refinement_v2']['rms_additional_displacement_m'],
+              'iris_vertex_count': report['candidate_eye_anatomy']['refinement_v2']['iris_vertex_count'],
+              'shape_delta_preservation_max_m': report['expression_preservation']['shape_delta_preservation_max_m'],
+          }, indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-IDENTITY-LOCK-REFINED-V2
+          path: output_identity_lock_refine_v2/**
+          if-no-files-found: error
+          retention-days: 30
