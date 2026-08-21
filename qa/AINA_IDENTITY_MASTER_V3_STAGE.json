@@ -1,0 +1,7 @@
+{
+  "stage": "AINA Identity Master v3",
+  "purpose": "Cross-prior female identity fitting with baked neutral expression and topology-preserving sculpt",
+  "identity_lock": false,
+  "visual_gate": "approved front, three-quarter and side real-clay comparison",
+  "vrm_export_frozen": true
+}
