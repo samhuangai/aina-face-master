@@ -1,0 +1,142 @@
+name: Probe AINA Official Alicia Identity Base
+
+on:
+  pull_request:
+    branches: [ci/aina-identity-master-base]
+    paths:
+      - RUN_AINA_ALICIA_OFFICIAL_BASE_PROBE
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-alicia-official-base-probe
+  cancel-in-progress: true
+
+jobs:
+  alicia_base_probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch official AliciaSolid VRM from VRM Consortium
+        run: |
+          set -euo pipefail
+          mkdir -p source
+          curl -fL --retry 3 \
+            https://raw.githubusercontent.com/vrm-c/UniVRMTest/master/Models/Alicia_vrm-0.40/AliciaSolid_vrm-0.40.vrm \
+            -o source/AliciaSolid_vrm-0.40.vrm
+          cp source/AliciaSolid_vrm-0.40.vrm source/AliciaSolid_vrm-0.40.glb
+          test -s source/AliciaSolid_vrm-0.40.vrm
+          test -s source/AliciaSolid_vrm-0.40.glb
+
+      - name: Record source repository licence
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 \
+            https://raw.githubusercontent.com/vrm-c/UniVRMTest/master/LICENSE.txt \
+            -o source/UNIVRMTEST_LICENSE.txt
+          grep -q 'MIT License' source/UNIVRMTEST_LICENSE.txt
+
+      - name: Install Blender 4.5.12 LTS and software rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 \
+            libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 2 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Import and render actual official Alicia model
+        run: |
+          set +e
+          mkdir -p output_alicia_base_probe/Preview output_alicia_base_probe/QA
+          xvfb-run -a -s '-screen 0 1800x1000x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_alicia_official_base_probe.py -- \
+            --model source/AliciaSolid_vrm-0.40.glb \
+            --out output_alicia_base_probe \
+            2>&1 | tee output_alicia_base_probe/QA/AINA_ALICIA_OFFICIAL_BASE_PROBE_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output_alicia_base_probe/QA/AINA_ALICIA_OFFICIAL_BASE_PROBE_EXIT.txt
+          exit "$code"
+
+      - name: Build original-material and clay contact sheet
+        if: success()
+        run: |
+          python -m pip install pillow
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw
+          preview=Path('output_alicia_base_probe/Preview')
+          qa=Path('output_alicia_base_probe/QA')
+          items=[]
+          for name in ('ORIGINAL_FRONT','ORIGINAL_THREE_QUARTER','ORIGINAL_SIDE','ORIGINAL_OPPOSITE','CLAY_FRONT','CLAY_THREE_QUARTER','CLAY_SIDE'):
+              path=preview/f'AINA_ALICIA_{name}.png'
+              image=Image.open(path).convert('RGB'); image.thumbnail((400,400))
+              panel=Image.new('RGB',(420,440),'white')
+              panel.paste(image,((420-image.width)//2,5))
+              ImageDraw.Draw(panel).text((8,414),name,fill='black')
+              items.append(panel)
+          sheet=Image.new('RGB',(420*4,440*2),'white')
+          for index,panel in enumerate(items):
+              sheet.paste(panel,((index%4)*420,(index//4)*440))
+          sheet.save(qa/'AINA_ALICIA_OFFICIAL_BASE_CONTACT_SHEET.png')
+          PY
+
+      - name: Enforce official-source and real-model probe gates
+        if: success()
+        run: |
+          set -euo pipefail
+          test -s output_alicia_base_probe/AINA_ALICIA_OFFICIAL_BASE_PROBE.blend
+          test -s output_alicia_base_probe/QA/AINA_ALICIA_OFFICIAL_BASE_PROBE_REPORT.json
+          test -s output_alicia_base_probe/QA/AINA_ALICIA_OFFICIAL_BASE_CONTACT_SHEET.png
+          for view in ORIGINAL_FRONT ORIGINAL_THREE_QUARTER ORIGINAL_SIDE ORIGINAL_OPPOSITE CLAY_FRONT CLAY_THREE_QUARTER CLAY_SIDE; do
+            test -s "output_alicia_base_probe/Preview/AINA_ALICIA_${view}.png"
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path('output_alicia_base_probe/QA/AINA_ALICIA_OFFICIAL_BASE_PROBE_REPORT.json').read_text())
+          assert report['source_repository']=='vrm-c/UniVRMTest'
+          assert report['source_repository_license']=='MIT'
+          assert report['real_3d_model'] is True
+          assert report['replacement_effect_art_generated'] is False
+          assert report['new_vrm_exported'] is False
+          assert report['total_vertices'] > 10000
+          assert report['armature_count'] >= 1
+          assert report['embedded_vrm_spec'] in ('VRM-0.x','VRM-1.0')
+          assert report['identity_lock'] is False
+          assert report['visual_identity_lock'] is False
+          print(json.dumps({
+              'embedded_vrm_spec':report['embedded_vrm_spec'],
+              'embedded_vrm_meta':report['embedded_vrm_meta'],
+              'total_vertices':report['total_vertices'],
+              'total_triangles':report['total_triangles'],
+              'shape_key_count':report['shape_key_count'],
+              'head_node_name':report['head_node_name'],
+              'eye_objects':report['eye_objects'],
+          },indent=2,ensure_ascii=False))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-ALICIA-OFFICIAL-BASE-PROBE
+          path: |
+            output_alicia_base_probe/**
+            source/UNIVRMTEST_LICENSE.txt
+          if-no-files-found: error
+          retention-days: 30
