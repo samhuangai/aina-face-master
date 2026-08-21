@@ -1,0 +1,391 @@
+name: Build AINA Integrated Dense Identity and Final VRM
+
+on:
+  pull_request:
+    branches: [ci/aina-integrated-final-base]
+    paths:
+      - RUN_AINA_INTEGRATED_FINAL
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: aina-integrated-dense-final
+  cancel-in-progress: true
+
+jobs:
+  integrated_final:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 125
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install image, dense landmark and archive dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git-lfs unzip jq zip
+          git lfs install
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy==1.26.4 pillow face-alignment mediapipe==0.10.21 opencv-python-headless
+
+      - name: Materialize the already-approved AINA references
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+          test -s references/AINA_APPROVED_FRONT.jpg
+          test -s references/AINA_APPROVED_3Q.jpg
+          test -s references/AINA_APPROVED_SIDE.jpg
+          test -s references/AINA_TARGET_3DDFA_SPARSE_68.json
+
+      - name: Download the latest pre-integrated real AINA identity candidate
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,pathlib,urllib.request
+          repository=os.environ['GITHUB_REPOSITORY'];token=os.environ['GH_TOKEN'];run_id=32462848029
+          headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'AINA-Integrated-Final'}
+          url=f'https://api.github.com/repos/{repository}/actions/runs/{run_id}/artifacts'
+          with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=60) as response:payload=json.load(response)
+          artifacts=[item for item in payload.get('artifacts',[]) if not item.get('expired')]
+          if not artifacts:raise SystemExit(f'No live artifact for source run {run_id}')
+          preferred=[item for item in artifacts if 'IDENTITY' in item['name'].upper() and ('LOCK' in item['name'].upper() or 'CANDIDATE' in item['name'].upper())]
+          artifact=max(preferred or artifacts,key=lambda item:item.get('created_at',''))
+          with urllib.request.urlopen(urllib.request.Request(artifact['archive_download_url'],headers=headers),timeout=240) as response:data=response.read()
+          pathlib.Path('source_identity.zip').write_bytes(data)
+          pathlib.Path('source_identity_artifact.json').write_text(json.dumps({'run_id':run_id,'artifact':artifact},indent=2))
+          print(json.dumps({'run_id':run_id,'artifact_id':artifact['id'],'artifact_name':artifact['name'],'bytes':len(data)},indent=2))
+          PY
+          unzip -q source_identity.zip -d source_identity
+          python - <<'PY'
+          from pathlib import Path
+          import json,shutil
+          root=Path('source_identity')
+          blends=[p for p in root.rglob('*.blend') if p.is_file()]
+          if not blends:raise SystemExit('Source identity artifact has no BLEND')
+          def blend_score(path):
+              name=path.name.upper();score=0
+              if 'LOCK' in name:score+=20
+              if 'CANDIDATE' in name:score+=15
+              if 'IDENTITY' in name:score+=8
+              if 'QA' in name or 'PROBE' in name:score-=12
+              return score,path.stat().st_size
+          blend=max(blends,key=blend_score);shutil.copy2(blend,'source_identity.blend')
+          pngs=[p for p in root.rglob('*.png') if p.is_file()]
+          def choose(view):
+              candidates=[]
+              for path in pngs:
+                  name=path.name.upper()
+                  if any(word in name for word in ('CONTACT','SHEET','APPROVED','LANDMARK','OVERLAY')):continue
+                  if any(word in name for word in ('HAPPY','SAD','ANGRY','BLINK','AA','OU','SMILE','EXPRESSION')):continue
+                  score=0
+                  if 'NEUTRAL' in name:score+=12
+                  if 'LOCK' in name or 'CANDIDATE' in name:score+=5
+                  if view=='front' and 'FRONT' in name and not any(word in name for word in ('LEFT','RIGHT','3Q','Q3','QUARTER','SIDE','PROFILE')):score+=35
+                  if view=='three_quarter' and any(word in name for word in ('THREE_QUARTER','3Q','Q3')):score+=35
+                  if view=='side' and any(word in name for word in ('SIDE','PROFILE')):score+=35
+                  if score>0:candidates.append((score,path.stat().st_size,path))
+              if not candidates:raise SystemExit(f'No source neutral render for {view}; sample={[p.name for p in pngs[:60]]}')
+              return max(candidates)[2]
+          Path('source_views').mkdir(exist_ok=True);selected={}
+          for view in ('front','three_quarter','side'):
+              path=choose(view);destination=Path('source_views')/f'{view}.png';shutil.copy2(path,destination);selected[view]=str(path)
+          Path('source_selection.json').write_text(json.dumps({'blend':str(blend),'views':selected},indent=2))
+          print(json.dumps({'blend':str(blend),'views':selected},indent=2))
+          PY
+          test -s source_identity.blend
+          test -s source_views/front.png
+          test -s source_views/three_quarter.png
+          test -s source_views/side.png
+
+      - name: Extract sparse approved and source-model identity landmarks
+        run: |
+          set -euo pipefail
+          mkdir -p output_sparse_landmarks
+          python src/extract_aina_vitruvian_fit_landmarks.py \
+            --approved-front references/AINA_APPROVED_FRONT.jpg \
+            --approved-q3 references/AINA_APPROVED_3Q.jpg \
+            --approved-side references/AINA_APPROVED_SIDE.jpg \
+            --model-front source_views/front.png \
+            --model-q3 source_views/three_quarter.png \
+            --model-side source_views/side.png \
+            --front-target references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --out output_sparse_landmarks
+          test -s output_sparse_landmarks/AINA_VITRUVIAN_FIT_LANDMARKS.json
+
+      - name: Install Blender 4.5.12 LTS and software rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Run the bounded sparse real-Mesh convergence first
+        run: |
+          set +e
+          mkdir -p output_stage68/QA output_stage68/Preview
+          xvfb-run -a -s '-screen 0 1600x1000x24' "$BLENDER" source_identity.blend \
+            --background --python-exit-code 1 \
+            --python src/blender/aina_vitruvian_final_visual_lock.py -- \
+            --landmarks output_sparse_landmarks/AINA_VITRUVIAN_FIT_LANDMARKS.json \
+            --out output_stage68 \
+            2>&1 | tee output_stage68/QA/AINA_STAGE68_BUILD.log
+          code=${PIPESTATUS[0]};echo "$code" > output_stage68/QA/AINA_STAGE68_EXIT.txt;exit "$code"
+
+      - name: Extract dense approved and freshly rendered real-model landmarks
+        run: |
+          set -euo pipefail
+          mkdir -p output_dense_landmarks
+          python src/extract_aina_dense_face_landmarks.py \
+            --approved-front references/AINA_APPROVED_FRONT.jpg \
+            --approved-q3 references/AINA_APPROVED_3Q.jpg \
+            --approved-side references/AINA_APPROVED_SIDE.jpg \
+            --model-front output_stage68/Preview/AINA_FINAL_LOCK_NEUTRAL_FRONT.png \
+            --model-q3 output_stage68/Preview/AINA_FINAL_LOCK_NEUTRAL_THREE_QUARTER.png \
+            --model-side output_stage68/Preview/AINA_FINAL_LOCK_NEUTRAL_SIDE.png \
+            --out output_dense_landmarks
+          test -s output_dense_landmarks/AINA_DENSE_FACE_LANDMARKS.json
+          test -s output_dense_landmarks/AINA_DENSE_LANDMARK_OVERLAYS.png
+
+      - name: Apply dense topology-preserving identity finalization to every shape key
+        run: |
+          set +e
+          mkdir -p output_dense_identity/QA output_dense_identity/Preview
+          xvfb-run -a -s '-screen 0 1600x1000x24' "$BLENDER" output_stage68/AINA_IDENTITY_MASTER_VISUAL_LOCK_CANDIDATE.blend \
+            --background --python-exit-code 1 \
+            --python src/blender/aina_vitruvian_dense_identity_finalization_v2.py -- \
+            --dense-landmarks output_dense_landmarks/AINA_DENSE_FACE_LANDMARKS.json \
+            --out output_dense_identity \
+            2>&1 | tee output_dense_identity/QA/AINA_DENSE_IDENTITY_BUILD.log
+          code=${PIPESTATUS[0]};echo "$code" > output_dense_identity/QA/AINA_DENSE_IDENTITY_EXIT.txt;exit "$code"
+
+      - name: Build dense approved-versus-real and expression review sheets
+        if: success()
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageDraw
+          root=Path('output_dense_identity');preview=root/'Preview';qa=root/'QA'
+          pairs=[
+              (Path('references/AINA_APPROVED_FRONT.jpg'),preview/'AINA_DENSE_FINAL_NEUTRAL_FRONT.png','APPROVED FRONT','DENSE REAL FRONT'),
+              (Path('references/AINA_APPROVED_3Q.jpg'),preview/'AINA_DENSE_FINAL_NEUTRAL_THREE_QUARTER.png','APPROVED 3Q','DENSE REAL 3Q'),
+              (Path('references/AINA_APPROVED_SIDE.jpg'),preview/'AINA_DENSE_FINAL_NEUTRAL_SIDE.png','APPROVED SIDE','DENSE REAL SIDE'),
+          ]
+          rows=[]
+          for ref_path,model_path,left_label,right_label in pairs:
+              ref=Image.open(ref_path).convert('RGB');model=Image.open(model_path).convert('RGB');ref.thumbnail((410,410));model.thumbnail((410,410));row=Image.new('RGB',(840,455),'white');row.paste(ref,((415-ref.width)//2,5));row.paste(model,(420+(415-model.width)//2,5));draw=ImageDraw.Draw(row);draw.text((10,425),left_label,fill='black');draw.text((430,425),right_label,fill='black');rows.append(row)
+          identity=Image.new('RGB',(840,1365),'white')
+          for i,row in enumerate(rows):identity.paste(row,(0,i*455))
+          identity.save(qa/'AINA_DENSE_APPROVED_VS_REAL.png')
+          names=['NEUTRAL_FRONT','HAPPY','SAD','ANGRY','BLINK','AA','OU'];panels=[]
+          for name in names:
+              path=preview/f'AINA_DENSE_FINAL_{name}.png'
+              image=Image.open(path).convert('RGB');image.thumbnail((350,350));panel=Image.new('RGB',(370,390),'white');panel.paste(image,((370-image.width)//2,4));ImageDraw.Draw(panel).text((8,365),name,fill='black');panels.append(panel)
+          sheet=Image.new('RGB',(1480,780),'white')
+          for i,panel in enumerate(panels):sheet.paste(panel,((i%4)*370,(i//4)*390))
+          sheet.save(qa/'AINA_DENSE_EXPRESSION_QA.png')
+          PY
+          test -s output_dense_identity/QA/AINA_DENSE_APPROVED_VS_REAL.png
+          test -s output_dense_identity/QA/AINA_DENSE_EXPRESSION_QA.png
+
+      - name: Enforce the dense real-head candidate gates
+        if: success()
+        run: |
+          set -euo pipefail
+          test -s output_dense_identity/AINA_DENSE_IDENTITY_MASTER.blend
+          test -s output_dense_identity/AINA_DENSE_IDENTITY_MASTER.glb
+          test -s output_dense_identity/QA/AINA_DENSE_IDENTITY_REPORT.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path('output_dense_identity/QA/AINA_DENSE_IDENTITY_REPORT.json').read_text())
+          assert report['real_3d_model'] is True
+          assert report['replacement_effect_art_generated'] is False
+          assert report['vertices']==17161
+          assert report['topology_changed'] is False
+          assert report['source_shape_key_count']>=26
+          assert report['shape_keys_before']==report['shape_keys_after']
+          assert report['expression_delta_max_drift']<=2.5e-6
+          assert report['mesh_health']['degenerate_triangles']==0
+          assert report['quantitative_identity_gate'] is True
+          assert report['identity_lock'] is False and report['visual_identity_lock'] is False and report['vrm_exported'] is False
+          print(json.dumps({'vertices':report['vertices'],'shape_keys':report['source_shape_key_count'],'dense_rmse':report['dense_normalized_rmse'],'expression_delta_drift':report['expression_delta_max_drift'],'mesh_health':report['mesh_health'],'quantitative_identity_gate':True},indent=2))
+          PY
+
+      - name: Fetch the matching CC0 rigged Vitruvian body
+        if: success()
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/ibrews/VitruvianGodot.git vendor/VitruvianGodot
+          git -C vendor/VitruvianGodot lfs install --local
+          git -C vendor/VitruvianGodot lfs pull --include='godot_project/vitruvian_body.glb'
+          test -s vendor/VitruvianGodot/godot_project/vitruvian_body.glb
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('vendor/VitruvianGodot/godot_project/vitruvian_body.glb');assert p.read_bytes()[:4]==b'glTF';print({'body_bytes':p.stat().st_size})
+          PY
+
+      - name: Assemble the dense head, full body, 52 controls, ribbon updo and VRM 1.0
+        if: success()
+        run: |
+          set +e
+          mkdir -p output_integrated_final/QA output_integrated_final/Preview
+          xvfb-run -a -s '-screen 0 1600x1000x24' "$BLENDER" output_dense_identity/AINA_DENSE_IDENTITY_MASTER.blend \
+            --background --python-exit-code 1 \
+            --python src/blender/aina_vitruvian_final_vrm_production_v5.py -- \
+            --body-glb vendor/VitruvianGodot/godot_project/vitruvian_body.glb \
+            --landmarks output_sparse_landmarks/AINA_VITRUVIAN_FIT_LANDMARKS.json \
+            --visual-report output_dense_identity/QA/AINA_DENSE_IDENTITY_REPORT.json \
+            --out output_integrated_final \
+            2>&1 | tee output_integrated_final/QA/AINA_INTEGRATED_FINAL_BUILD.log
+          code=${PIPESTATUS[0]};echo "$code" > output_integrated_final/QA/AINA_INTEGRATED_FINAL_EXIT.txt;exit "$code"
+
+      - name: Build final approved-reference, expression, hair and full-character sheets
+        if: success()
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageDraw
+          root=Path('output_integrated_final');preview=root/'Preview';qa=root/'QA'
+          pairs=[(Path('references/AINA_APPROVED_FRONT.jpg'),preview/'AINA_FINAL_PORTRAIT_NEUTRAL.png','APPROVED FRONT','FINAL REAL FRONT'),(Path('references/AINA_APPROVED_3Q.jpg'),preview/'AINA_FINAL_PORTRAIT_NEUTRAL_3Q.png','APPROVED 3Q','FINAL REAL 3Q'),(Path('references/AINA_APPROVED_SIDE.jpg'),preview/'AINA_FINAL_PORTRAIT_NEUTRAL_SIDE.png','APPROVED SIDE','FINAL REAL SIDE')]
+          rows=[]
+          for ref_path,model_path,left_label,right_label in pairs:
+              ref=Image.open(ref_path).convert('RGB');model=Image.open(model_path).convert('RGB');ref.thumbnail((410,410));model.thumbnail((410,410));row=Image.new('RGB',(840,455),'white');row.paste(ref,((415-ref.width)//2,5));row.paste(model,(420+(415-model.width)//2,5));draw=ImageDraw.Draw(row);draw.text((10,425),left_label,fill='black');draw.text((430,425),right_label,fill='black');rows.append(row)
+          identity=Image.new('RGB',(840,1365),'white')
+          for i,row in enumerate(rows):identity.paste(row,(0,i*455))
+          identity.save(qa/'AINA_INTEGRATED_APPROVED_VS_REAL_IDENTITY.png')
+          names=['NEUTRAL','HAPPY','SAD','ANGRY','SURPRISED','BLINK','AA','OU'];panels=[]
+          for name in names:
+              image=Image.open(preview/f'AINA_FINAL_PORTRAIT_{name}.png').convert('RGB');image.thumbnail((350,350));panel=Image.new('RGB',(370,390),'white');panel.paste(image,((370-image.width)//2,4));ImageDraw.Draw(panel).text((8,365),name,fill='black');panels.append(panel)
+          expressions=Image.new('RGB',(1480,780),'white')
+          for i,panel in enumerate(panels):expressions.paste(panel,((i%4)*370,(i//4)*390))
+          expressions.save(qa/'AINA_INTEGRATED_52_EXPRESSION_VISUAL_QA.png')
+          full=Image.new('RGB',(1080,760),'white')
+          for i,name in enumerate(['AINA_FINAL_FULL_FRONT.png','AINA_FINAL_FULL_THREE_QUARTER.png']):
+              image=Image.open(preview/name).convert('RGB');image.thumbnail((520,720));panel=Image.new('RGB',(540,760),'white');panel.paste(image,((540-image.width)//2,4));ImageDraw.Draw(panel).text((8,735),name,fill='black');full.paste(panel,(i*540,0))
+          full.save(qa/'AINA_INTEGRATED_FULL_CHARACTER_QA.png')
+          PY
+          test -s output_integrated_final/QA/AINA_INTEGRATED_APPROVED_VS_REAL_IDENTITY.png
+          test -s output_integrated_final/QA/AINA_INTEGRATED_52_EXPRESSION_VISUAL_QA.png
+          test -s output_integrated_final/QA/AINA_INTEGRATED_FULL_CHARACTER_QA.png
+
+      - name: Enforce 52/52, 18/18, humanoid, spring and clean-reimport gates
+        if: success()
+        run: |
+          set -euo pipefail
+          test -s output_integrated_final/AINA_MASTER.blend
+          test -s output_integrated_final/AINA.vrm
+          test -s output_integrated_final/QA/AINA_FINAL_VRM_PRODUCTION_REPORT.json
+          test -s output_integrated_final/QA/AINA_VRM_CLEAN_REIMPORT.blend
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path('output_integrated_final/QA/AINA_FINAL_VRM_PRODUCTION_REPORT.json').read_text());pre=report['pre_reimport'];reimport=report['reimport'];binary=reimport['binary']
+          assert report['real_3d_model'] is True and report['replacement_effect_art_generated'] is False
+          assert report['technical_release_gate'] is True
+          assert report['input_visual_quantitative_gate'] is True
+          assert pre['skin_vertices']==17161 and pre['arkit']['created']==52
+          assert pre['arkit']['missing']==[] and pre['arkit']['zero_or_placeholder']==[]
+          assert pre['hair_object_count']>=100
+          assert binary['vrm_spec_version']=='1.0' and binary['arkit_52_count']==52 and binary['preset_expression_count']==18
+          assert binary['missing_required_humanoid']==[] and binary['spring_count']>=1
+          assert reimport['imported_arkit_52_count']==52 and reimport['imported_arkit_52_missing']==[] and reimport['pass'] is True
+          assert reimport.get('alias_bytes_equal') is True
+          assert report['identity_lock'] is False and report['visual_identity_lock'] is False and report['production_release'] is False
+          print(json.dumps({'technical_release_gate':True,'vrm_bytes':report['vrm_bytes'],'vertices':pre['skin_vertices'],'source_plus_arkit_shape_keys':len(pre['shape_key_names'])-1,'arkit_52':52,'presets':18,'humanoid_bones':binary['humanoid_bone_count'],'spring_count':binary['spring_count'],'hair_objects':pre['hair_object_count'],'clean_reimport':True},indent=2))
+          PY
+
+      - name: Write integrated candidate status
+        if: success()
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          dense=json.loads(Path('output_dense_identity/QA/AINA_DENSE_IDENTITY_REPORT.json').read_text())
+          vrm=json.loads(Path('output_integrated_final/QA/AINA_FINAL_VRM_PRODUCTION_REPORT.json').read_text())
+          status={
+              'product':'AINA Integrated Final Production Candidate',
+              'real_3d_model':True,
+              'replacement_effect_art_generated':False,
+              'dense_identity_quantitative_gate':dense['quantitative_identity_gate'],
+              'dense_identity_rmse':dense['dense_normalized_rmse'],
+              'expression_delta_max_drift':dense['expression_delta_max_drift'],
+              'technical_vrm_gate':vrm['technical_release_gate'],
+              'arkit_52':vrm['reimport']['binary']['arkit_52_count'],
+              'vrm_presets':vrm['reimport']['binary']['preset_expression_count'],
+              'clean_reimport':vrm['reimport']['pass'],
+              'hair_objects':vrm['pre_reimport']['hair_object_count'],
+              'identity_lock':False,
+              'visual_identity_lock':False,
+              'production_release':False,
+              'manual_actual_render_review_required':True,
+              'next_gate':'Inspect the attached actual approved-vs-real, expression and full-character renders. Lock and publish the exact unchanged VRM only if the same AINA identity is visually preserved.'
+          }
+          Path('output_integrated_final/QA/AINA_INTEGRATED_FINAL_STATUS.json').write_text(json.dumps(status,indent=2))
+          print(json.dumps(status,indent=2))
+          PY
+
+      - name: Package and publish the integrated candidate for actual visual review
+        if: success()
+        run: |
+          set -euo pipefail
+          mkdir -p AINA_INTEGRATED_FINAL_CANDIDATE
+          cp output_integrated_final/AINA.vrm AINA_INTEGRATED_FINAL_CANDIDATE/
+          cp output_integrated_final/AINA_MASTER.blend AINA_INTEGRATED_FINAL_CANDIDATE/
+          cp output_dense_identity/AINA_DENSE_IDENTITY_MASTER.blend AINA_INTEGRATED_FINAL_CANDIDATE/
+          cp output_dense_identity/QA/AINA_DENSE_IDENTITY_REPORT.json AINA_INTEGRATED_FINAL_CANDIDATE/
+          cp output_integrated_final/QA/AINA_FINAL_VRM_PRODUCTION_REPORT.json AINA_INTEGRATED_FINAL_CANDIDATE/
+          cp output_integrated_final/QA/AINA_INTEGRATED_FINAL_STATUS.json AINA_INTEGRATED_FINAL_CANDIDATE/
+          cp output_dense_identity/QA/AINA_DENSE_APPROVED_VS_REAL.png AINA_INTEGRATED_FINAL_CANDIDATE/
+          cp output_integrated_final/QA/AINA_INTEGRATED_APPROVED_VS_REAL_IDENTITY.png AINA_INTEGRATED_FINAL_CANDIDATE/
+          cp output_integrated_final/QA/AINA_INTEGRATED_52_EXPRESSION_VISUAL_QA.png AINA_INTEGRATED_FINAL_CANDIDATE/
+          cp output_integrated_final/QA/AINA_INTEGRATED_FULL_CHARACTER_QA.png AINA_INTEGRATED_FINAL_CANDIDATE/
+          cp output_integrated_final/QA/AINA_VRM_CLEAN_REIMPORT.blend AINA_INTEGRATED_FINAL_CANDIDATE/
+          zip -9 -r AINA_INTEGRATED_FINAL_CANDIDATE.zip AINA_INTEGRATED_FINAL_CANDIDATE
+          gh release delete aina-integrated-final-candidate --cleanup-tag -y || true
+          gh release create aina-integrated-final-candidate \
+            AINA_INTEGRATED_FINAL_CANDIDATE.zip \
+            output_integrated_final/AINA.vrm \
+            output_integrated_final/QA/AINA_INTEGRATED_APPROVED_VS_REAL_IDENTITY.png \
+            output_integrated_final/QA/AINA_INTEGRATED_52_EXPRESSION_VISUAL_QA.png \
+            output_integrated_final/QA/AINA_INTEGRATED_FULL_CHARACTER_QA.png \
+            output_dense_identity/QA/AINA_DENSE_APPROVED_VS_REAL.png \
+            --title 'AINA Integrated Final Production Candidate' \
+            --notes 'Real dense-identity AINA production candidate. It preserves the 17,161-vertex FACS head, performs sparse plus dense approved-reference convergence, retains source expression deltas, adds 52/52 non-zero ARKit controls, 18/18 VRM presets, humanoid rig, ribbon-card silver updo, spring bones and clean Blender reimport. Identity and production locks intentionally remain false until the attached actual renders are accepted.'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-INTEGRATED-FINAL-CANDIDATE
+          path: |
+            source_identity_artifact.json
+            source_selection.json
+            output_sparse_landmarks/**
+            output_stage68/**
+            output_dense_landmarks/**
+            output_dense_identity/**
+            output_integrated_final/**
+            AINA_INTEGRATED_FINAL_CANDIDATE.zip
+          if-no-files-found: warn
+          retention-days: 30
