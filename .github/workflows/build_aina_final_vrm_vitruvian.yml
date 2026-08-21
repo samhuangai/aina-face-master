@@ -1,0 +1,252 @@
+name: Build AINA Final VRM Production
+
+on:
+  pull_request:
+    branches: [ci/aina-final-vrm-production-base]
+    paths:
+      - RUN_AINA_FINAL_VRM_PRODUCTION
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-final-vrm-production
+  cancel-in-progress: true
+
+jobs:
+  production:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install archive and Git LFS tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git-lfs unzip jq
+          git lfs install
+
+      - name: Wait for and download the successful real visual-lock artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, pathlib, time, urllib.request
+          repository=os.environ['GITHUB_REPOSITORY']
+          token=os.environ['GH_TOKEN']
+          workflow='build_aina_vitruvian_final_visual_lock.yml'
+          headers={
+              'Authorization':f'Bearer {token}',
+              'Accept':'application/vnd.github+json',
+              'X-GitHub-Api-Version':'2022-11-28',
+              'User-Agent':'AINA-Final-VRM-Production',
+          }
+          selected=None
+          for attempt in range(60):
+              url=f'https://api.github.com/repos/{repository}/actions/workflows/{workflow}/runs?per_page=20'
+              with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=60) as response:
+                  payload=json.load(response)
+              runs=[run for run in payload.get('workflow_runs',[]) if run.get('head_branch')=='ci/aina-final-visual-lock-run']
+              successful=[run for run in runs if run.get('status')=='completed' and run.get('conclusion')=='success']
+              if successful:
+                  selected=max(successful,key=lambda run:run.get('created_at',''))
+                  break
+              failed=[run for run in runs if run.get('status')=='completed' and run.get('conclusion') not in (None,'success')]
+              active=[run for run in runs if run.get('status')!='completed']
+              if failed and not active:
+                  raise SystemExit(f'Latest final visual-lock workflow failed: {failed[0].get("html_url")}')
+              print(f'Waiting for final visual-lock artifact, attempt {attempt+1}/60')
+              time.sleep(15)
+          if selected is None:
+              raise SystemExit('Timed out waiting for a successful final visual-lock run')
+          artifact_url=f'https://api.github.com/repos/{repository}/actions/runs/{selected["id"]}/artifacts'
+          with urllib.request.urlopen(urllib.request.Request(artifact_url,headers=headers),timeout=60) as response:
+              payload=json.load(response)
+          artifacts=[item for item in payload.get('artifacts',[]) if not item.get('expired')]
+          preferred=[item for item in artifacts if item.get('name')=='AINA-FINAL-REAL-VISUAL-LOCK-CANDIDATE']
+          if not preferred:
+              raise SystemExit(f'No final visual-lock artifact on run {selected["id"]}')
+          artifact=max(preferred,key=lambda item:item.get('created_at',''))
+          with urllib.request.urlopen(urllib.request.Request(artifact['archive_download_url'],headers=headers),timeout=240) as response:
+              data=response.read()
+          pathlib.Path('visual_lock.zip').write_bytes(data)
+          pathlib.Path('visual_lock_run.json').write_text(json.dumps({'run':selected,'artifact':artifact},indent=2))
+          print(json.dumps({'run_id':selected['id'],'artifact_id':artifact['id'],'bytes':len(data)},indent=2))
+          PY
+          unzip -q visual_lock.zip -d visual_lock
+          python - <<'PY'
+          from pathlib import Path
+          import shutil,json
+          root=Path('visual_lock')
+          def select(pattern,preferred_tokens=()):
+              files=[p for p in root.rglob(pattern) if p.is_file()]
+              if not files: raise SystemExit(f'No file matching {pattern}')
+              return max(files,key=lambda p:(sum(token in p.name.upper() for token in preferred_tokens),p.stat().st_size))
+          blend=select('*.blend',('VISUAL','LOCK','CANDIDATE'))
+          landmarks=select('*FIT_LANDMARKS.json',('LANDMARKS',))
+          report=select('*FINAL_VISUAL_LOCK_REPORT.json',('REPORT',))
+          shutil.copy2(blend,'AINA_VISUAL_LOCK_CANDIDATE.blend')
+          shutil.copy2(landmarks,'AINA_VISUAL_LOCK_LANDMARKS.json')
+          shutil.copy2(report,'AINA_VISUAL_LOCK_REPORT.json')
+          Path('visual_lock_selection.json').write_text(json.dumps({'blend':str(blend),'landmarks':str(landmarks),'report':str(report)},indent=2))
+          PY
+          test -s AINA_VISUAL_LOCK_CANDIDATE.blend
+          test -s AINA_VISUAL_LOCK_LANDMARKS.json
+          test -s AINA_VISUAL_LOCK_REPORT.json
+
+      - name: Fetch the matching CC0 rigged Vitruvian body
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/ibrews/VitruvianGodot.git vendor/VitruvianGodot
+          git -C vendor/VitruvianGodot lfs install --local
+          git -C vendor/VitruvianGodot lfs pull --include='godot_project/vitruvian_body.glb'
+          test -s vendor/VitruvianGodot/godot_project/vitruvian_body.glb
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('vendor/VitruvianGodot/godot_project/vitruvian_body.glb')
+          data=p.read_bytes()[:16]
+          assert data[:4]==b'glTF', f'Body GLB is an LFS pointer or invalid: {data!r}'
+          print({'body_bytes':p.stat().st_size})
+          PY
+
+      - name: Install Blender 4.5.12 LTS and software rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Assemble the real body, 52 controls, silver updo and VRM 1.0
+        run: |
+          set +e
+          mkdir -p output_final_vrm/QA output_final_vrm/Preview
+          xvfb-run -a -s '-screen 0 1600x1000x24' "$BLENDER" AINA_VISUAL_LOCK_CANDIDATE.blend \
+            --background --python-exit-code 1 \
+            --python src/blender/aina_vitruvian_final_vrm_production_v2.py -- \
+            --body-glb vendor/VitruvianGodot/godot_project/vitruvian_body.glb \
+            --landmarks AINA_VISUAL_LOCK_LANDMARKS.json \
+            --visual-report AINA_VISUAL_LOCK_REPORT.json \
+            --out output_final_vrm \
+            2>&1 | tee output_final_vrm/QA/AINA_FINAL_VRM_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output_final_vrm/QA/AINA_FINAL_VRM_EXIT.txt
+          exit "$code"
+
+      - name: Build actual-model production review sheets
+        if: success()
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageDraw
+          root=Path('output_final_vrm')
+          preview=root/'Preview'
+          qa=root/'QA'
+          pairs=[
+              (Path('references/AINA_APPROVED_FRONT.jpg'),preview/'AINA_FINAL_PORTRAIT_NEUTRAL.png','APPROVED FRONT','FINAL REAL FRONT'),
+              (Path('references/AINA_APPROVED_3Q.jpg'),preview/'AINA_FINAL_PORTRAIT_NEUTRAL_3Q.png','APPROVED 3Q','FINAL REAL 3Q'),
+              (Path('references/AINA_APPROVED_SIDE.jpg'),preview/'AINA_FINAL_PORTRAIT_NEUTRAL_SIDE.png','APPROVED SIDE','FINAL REAL SIDE'),
+          ]
+          rows=[]
+          for ref_path,model_path,left_label,right_label in pairs:
+              ref=Image.open(ref_path).convert('RGB');model=Image.open(model_path).convert('RGB')
+              ref.thumbnail((410,410));model.thumbnail((410,410))
+              row=Image.new('RGB',(840,455),'white')
+              row.paste(ref,((415-ref.width)//2,5));row.paste(model,(420+(415-model.width)//2,5))
+              draw=ImageDraw.Draw(row);draw.text((10,425),left_label,fill='black');draw.text((430,425),right_label,fill='black')
+              rows.append(row)
+          identity=Image.new('RGB',(840,1365),'white')
+          for i,row in enumerate(rows):identity.paste(row,(0,i*455))
+          identity.save(qa/'AINA_FINAL_APPROVED_VS_REAL_IDENTITY.png')
+
+          names=['NEUTRAL','HAPPY','SAD','ANGRY','SURPRISED','BLINK','AA','OU']
+          panels=[]
+          for name in names:
+              path=preview/f'AINA_FINAL_PORTRAIT_{name}.png'
+              image=Image.open(path).convert('RGB');image.thumbnail((350,350))
+              panel=Image.new('RGB',(370,390),'white');panel.paste(image,((370-image.width)//2,4));ImageDraw.Draw(panel).text((8,365),name,fill='black');panels.append(panel)
+          expressions=Image.new('RGB',(1480,780),'white')
+          for i,panel in enumerate(panels):expressions.paste(panel,((i%4)*370,(i//4)*390))
+          expressions.save(qa/'AINA_FINAL_52_EXPRESSION_VISUAL_QA.png')
+
+          full_names=['AINA_FINAL_FULL_FRONT.png','AINA_FINAL_FULL_THREE_QUARTER.png']
+          full_panels=[]
+          for name in full_names:
+              image=Image.open(preview/name).convert('RGB');image.thumbnail((520,720))
+              panel=Image.new('RGB',(540,760),'white');panel.paste(image,((540-image.width)//2,4));ImageDraw.Draw(panel).text((8,735),name,fill='black');full_panels.append(panel)
+          full=Image.new('RGB',(1080,760),'white')
+          for i,panel in enumerate(full_panels):full.paste(panel,(i*540,0))
+          full.save(qa/'AINA_FINAL_FULL_CHARACTER_QA.png')
+          PY
+          test -s output_final_vrm/QA/AINA_FINAL_APPROVED_VS_REAL_IDENTITY.png
+          test -s output_final_vrm/QA/AINA_FINAL_52_EXPRESSION_VISUAL_QA.png
+          test -s output_final_vrm/QA/AINA_FINAL_FULL_CHARACTER_QA.png
+
+      - name: Enforce final technical release and clean-reimport gates
+        if: success()
+        run: |
+          set -euo pipefail
+          test -s output_final_vrm/AINA_MASTER.blend
+          test -s output_final_vrm/AINA.vrm
+          test -s output_final_vrm/QA/AINA_FINAL_VRM_PRODUCTION_REPORT.json
+          test -s output_final_vrm/QA/AINA_VRM_CLEAN_REIMPORT.blend
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path('output_final_vrm/QA/AINA_FINAL_VRM_PRODUCTION_REPORT.json').read_text())
+          pre=report['pre_reimport'];reimport=report['reimport'];binary=reimport['binary']
+          assert report['real_3d_model'] is True
+          assert report['replacement_effect_art_generated'] is False
+          assert report['technical_release_gate'] is True
+          assert pre['skin_vertices']==17161
+          assert pre['arkit']['created']==52
+          assert pre['arkit']['missing']==[]
+          assert pre['arkit']['zero_or_placeholder']==[]
+          assert binary['vrm_spec_version']=='1.0'
+          assert binary['arkit_52_count']==52
+          assert binary['preset_expression_count']==18
+          assert binary['missing_required_humanoid']==[]
+          assert reimport['imported_arkit_52_count']==52
+          assert reimport['imported_arkit_52_missing']==[]
+          assert reimport['pass'] is True
+          assert report['identity_lock'] is False
+          assert report['visual_identity_lock'] is False
+          assert report['production_release'] is False
+          print(json.dumps({
+              'technical_release_gate':report['technical_release_gate'],
+              'vrm_bytes':report['vrm_bytes'],
+              'vertices':pre['skin_vertices'],
+              'arkit_52':binary['arkit_52_count'],
+              'presets':binary['preset_expression_count'],
+              'humanoid_bones':binary['humanoid_bone_count'],
+              'springs':binary['spring_count'],
+              'clean_reimport':reimport['pass'],
+              'manual_visual_gate_required':report['manual_full_character_visual_gate_required'],
+          },indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-FINAL-VRM-PRODUCTION-CANDIDATE
+          path: |
+            visual_lock_run.json
+            visual_lock_selection.json
+            output_final_vrm/**
+          if-no-files-found: error
+          retention-days: 30
