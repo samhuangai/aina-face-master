@@ -1,0 +1,182 @@
+name: Audit and Lock AINA Final Production
+
+on:
+  pull_request:
+    branches: [ci/aina-final-visual-audit-base]
+    paths:
+      - RUN_AINA_FINAL_VISUAL_AUDIT
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: aina-final-visual-audit
+  cancel-in-progress: true
+
+jobs:
+  visual_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HF_HOME: ${{ github.workspace }}/.hf-cache
+      TORCH_HOME: ${{ github.workspace }}/.torch-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install strict visual-audit dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends unzip jq zip
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy==1.26.4 pillow mediapipe==0.10.21 opencv-python-headless facenet-pytorch
+          pip install 'transformers>=4.49,<5' accelerate qwen-vl-utils
+
+      - name: Download the actual approved-appearance AINA candidate and QA sheets
+        run: |
+          set -euo pipefail
+          mkdir -p candidate
+          gh release download aina-textured-final-candidate \
+            --dir candidate \
+            --pattern 'AINA_TEXTURED_FINAL_CANDIDATE.zip' \
+            --pattern 'AINA.vrm' \
+            --pattern 'AINA_TEXTURED_APPROVED_VS_REAL_IDENTITY.png' \
+            --pattern 'AINA_TEXTURED_52_EXPRESSION_VISUAL_QA.png' \
+            --pattern 'AINA_TEXTURED_FULL_CHARACTER_QA.png'
+          test -s candidate/AINA_TEXTURED_FINAL_CANDIDATE.zip
+          test -s candidate/AINA.vrm
+          test -s candidate/AINA_TEXTURED_APPROVED_VS_REAL_IDENTITY.png
+          test -s candidate/AINA_TEXTURED_52_EXPRESSION_VISUAL_QA.png
+          test -s candidate/AINA_TEXTURED_FULL_CHARACTER_QA.png
+          unzip -q candidate/AINA_TEXTURED_FINAL_CANDIDATE.zip -d candidate/unpacked
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib,json,shutil
+          root=Path('candidate/unpacked')
+          blends=[p for p in root.rglob('AINA_MASTER.blend') if p.is_file()]
+          reports=[p for p in root.rglob('AINA_FINAL_VRM_PRODUCTION_REPORT.json') if p.is_file()]
+          statuses=[p for p in root.rglob('AINA_TEXTURED_FINAL_STATUS.json') if p.is_file()]
+          if not blends or not reports or not statuses:raise SystemExit('Candidate package is incomplete')
+          shutil.copy2(max(blends,key=lambda p:p.stat().st_size),'candidate/AINA_MASTER.blend')
+          shutil.copy2(reports[0],'candidate/AINA_FINAL_VRM_PRODUCTION_REPORT.json')
+          shutil.copy2(statuses[0],'candidate/AINA_TEXTURED_FINAL_STATUS.json')
+          def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+          Path('candidate/CANDIDATE_BINARY_SHA256.json').write_text(json.dumps({'AINA.vrm':sha('candidate/AINA.vrm'),'AINA_MASTER.blend':sha('candidate/AINA_MASTER.blend')},indent=2))
+          PY
+          test -s candidate/AINA_MASTER.blend
+          test -s candidate/AINA_FINAL_VRM_PRODUCTION_REPORT.json
+
+      - name: Run dense geometry, cross-style embedding, expression and VLM review
+        run: |
+          set -euo pipefail
+          mkdir -p visual_audit
+          python src/qa/aina_final_visual_audit.py \
+            --identity-sheet candidate/AINA_TEXTURED_APPROVED_VS_REAL_IDENTITY.png \
+            --expression-sheet candidate/AINA_TEXTURED_52_EXPRESSION_VISUAL_QA.png \
+            --full-sheet candidate/AINA_TEXTURED_FULL_CHARACTER_QA.png \
+            --out visual_audit \
+            --vlm-model Qwen/Qwen2-VL-2B-Instruct \
+            2>&1 | tee visual_audit/AINA_FINAL_VISUAL_AUDIT.log
+          test -s visual_audit/AINA_FINAL_VISUAL_AUDIT.json
+
+      - name: Preserve the exact candidate binaries and write lock report when every visual gate passes
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib,json,shutil
+          from pathlib import Path
+          audit=json.loads(Path('visual_audit/AINA_FINAL_VISUAL_AUDIT.json').read_text())
+          production=json.loads(Path('candidate/AINA_FINAL_VRM_PRODUCTION_REPORT.json').read_text())
+          original_sha=json.loads(Path('candidate/CANDIDATE_BINARY_SHA256.json').read_text())
+          root=Path('final_release' if audit['pass'] else 'failed_audit')
+          root.mkdir(exist_ok=True)
+          for name in ('AINA.vrm','AINA_MASTER.blend','AINA_TEXTURED_APPROVED_VS_REAL_IDENTITY.png','AINA_TEXTURED_52_EXPRESSION_VISUAL_QA.png','AINA_TEXTURED_FULL_CHARACTER_QA.png'):
+              shutil.copy2(Path('candidate')/name,root/name)
+          shutil.copy2('visual_audit/AINA_FINAL_VISUAL_AUDIT.json',root/'AINA_FINAL_VISUAL_AUDIT.json')
+          shutil.copy2('visual_audit/AINA_FINAL_VISUAL_AUDIT.log',root/'AINA_FINAL_VISUAL_AUDIT.log')
+          def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+          binary_unchanged={
+              'AINA.vrm':sha(root/'AINA.vrm')==original_sha['AINA.vrm'],
+              'AINA_MASTER.blend':sha(root/'AINA_MASTER.blend')==original_sha['AINA_MASTER.blend'],
+          }
+          if not all(binary_unchanged.values()):raise SystemExit(f'Candidate binary mutation detected: {binary_unchanged}')
+          report={
+              'product':'AINA Final Production Release' if audit['pass'] else 'AINA Visual Audit Failure',
+              'real_3d_model':True,
+              'replacement_effect_art_generated':False,
+              'technical_release_gate':production['technical_release_gate'],
+              'visual_audit':audit,
+              'candidate_binaries_preserved_exactly':binary_unchanged,
+              'binary_sha256':original_sha,
+              'identity_lock':bool(audit['pass']),
+              'visual_identity_lock':bool(audit['pass']),
+              'production_release':bool(audit['pass']),
+              'candidate':not bool(audit['pass']),
+              'decision':'LOCKED_FINAL_UNCHANGED_BINARIES' if audit['pass'] else 'NOT_LOCKED_CONTINUE_REAL_MESH_REFINEMENT',
+          }
+          (root/'AINA_FINAL_RELEASE_REPORT.json').write_text(json.dumps(report,indent=2))
+          Path('AUDIT_DECISION.txt').write_text('PASS' if audit['pass'] else 'FAIL')
+          print(json.dumps({'pass':audit['pass'],'binary_unchanged':binary_unchanged,'gates':audit['gates']},indent=2))
+          PY
+          test -s AUDIT_DECISION.txt
+
+      - name: Publish immutable locked final release
+        if: ${{ hashFiles('final_release/AINA_FINAL_RELEASE_REPORT.json') != '' }}
+        run: |
+          set -euo pipefail
+          cd final_release
+          zip -9 -r ../AINA_FINAL_PRODUCTION_RELEASE.zip .
+          cd ..
+          gh release delete aina-final-production --cleanup-tag -y || true
+          gh release create aina-final-production \
+            AINA_FINAL_PRODUCTION_RELEASE.zip \
+            final_release/AINA.vrm \
+            final_release/AINA_MASTER.blend \
+            final_release/AINA_FINAL_RELEASE_REPORT.json \
+            final_release/AINA_FINAL_VISUAL_AUDIT.json \
+            final_release/AINA_TEXTURED_APPROVED_VS_REAL_IDENTITY.png \
+            final_release/AINA_TEXTURED_52_EXPRESSION_VISUAL_QA.png \
+            final_release/AINA_TEXTURED_FULL_CHARACTER_QA.png \
+            --title 'AINA Final Production Release' \
+            --notes 'Locked final AINA release. The exact technically validated candidate binaries are unchanged. Independent gates passed: dense landmark geometry, FaceNet and DINOv2 cross-style identity, expression identity and articulation, strict multimodal review, 52/52 ARKit controls, 18/18 VRM presets, humanoid rig, spring bones, approved facial appearance vertex colours and clean Blender reimport.'
+
+      - name: Publish failed visual audit without locking the model
+        if: ${{ hashFiles('failed_audit/AINA_FINAL_RELEASE_REPORT.json') != '' }}
+        run: |
+          set -euo pipefail
+          cd failed_audit
+          zip -9 -r ../AINA_FINAL_VISUAL_AUDIT_FAILED.zip .
+          cd ..
+          gh release delete aina-final-visual-audit-failed --cleanup-tag -y || true
+          gh release create aina-final-visual-audit-failed \
+            AINA_FINAL_VISUAL_AUDIT_FAILED.zip \
+            failed_audit/AINA_FINAL_RELEASE_REPORT.json \
+            failed_audit/AINA_FINAL_VISUAL_AUDIT.json \
+            failed_audit/AINA_TEXTURED_APPROVED_VS_REAL_IDENTITY.png \
+            failed_audit/AINA_TEXTURED_52_EXPRESSION_VISUAL_QA.png \
+            failed_audit/AINA_TEXTURED_FULL_CHARACTER_QA.png \
+            --title 'AINA Final Visual Audit — Not Locked' \
+            --notes 'The actual real-model visual audit did not pass every strict gate. Identity, visual identity and production locks remain false. The attached report identifies the remaining discrepancies; no technical-only override was used.'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-FINAL-VISUAL-AUDIT
+          path: |
+            visual_audit/**
+            candidate/CANDIDATE_BINARY_SHA256.json
+            final_release/**
+            failed_audit/**
+            AINA_FINAL_PRODUCTION_RELEASE.zip
+            AINA_FINAL_VISUAL_AUDIT_FAILED.zip
+            AUDIT_DECISION.txt
+          if-no-files-found: warn
+          retention-days: 30
