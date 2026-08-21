@@ -1,0 +1,174 @@
+name: Sculpt AINA Vitruvian Identity v2
+
+on:
+  pull_request:
+    branches: [ci/aina-identity-master-base]
+    paths:
+      - RUN_AINA_VITRUVIAN_IDENTITY_SCULPT_V2
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-vitruvian-identity-sculpt-v2
+  cancel-in-progress: true
+
+jobs:
+  sculpt_v2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Materialize approved AINA references
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+          test -s references/AINA_APPROVED_FRONT.jpg
+          test -s references/AINA_APPROVED_3Q.jpg
+          test -s references/AINA_APPROVED_SIDE.jpg
+
+      - name: Download the verified real Vitruvian FACS source package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/9438408733/zip" \
+            -o vitruvian_fit.zip
+          mkdir -p input_fit
+          unzip -q vitruvian_fit.zip -d input_fit
+          test -s input_fit/AINA_VITRUVIAN_HEAD_PROBE.blend
+
+      - name: Install Blender 4.5.12 LTS and software rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 \
+            libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 2 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Sculpt the actual FACS topology and preserve every expression delta
+        run: |
+          set +e
+          mkdir -p output_vitruvian_sculpt_v2/Preview output_vitruvian_sculpt_v2/QA
+          xvfb-run -a -s '-screen 0 1600x900x24' "$BLENDER" \
+            input_fit/AINA_VITRUVIAN_HEAD_PROBE.blend \
+            --background --python-exit-code 1 \
+            --python src/blender/aina_vitruvian_identity_sculpt_v2.py -- \
+            --out output_vitruvian_sculpt_v2 \
+            2>&1 | tee output_vitruvian_sculpt_v2/QA/AINA_VITRUVIAN_SCULPT_V2_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output_vitruvian_sculpt_v2/QA/AINA_VITRUVIAN_SCULPT_V2_EXIT.txt
+          exit "$code"
+
+      - name: Build approved-reference and real-expression review sheets
+        if: success()
+        run: |
+          python -m pip install pillow
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw
+
+          out = Path('output_vitruvian_sculpt_v2')
+          preview = out / 'Preview'
+          qa = out / 'QA'
+
+          comparisons = [
+              (Path('references/AINA_APPROVED_FRONT.jpg'), preview / 'AINA_VITRUVIAN_SCULPT_V2_FRONT.png', 'FRONT'),
+              (Path('references/AINA_APPROVED_3Q.jpg'), preview / 'AINA_VITRUVIAN_SCULPT_V2_THREE_QUARTER.png', '3Q'),
+              (Path('references/AINA_APPROVED_SIDE.jpg'), preview / 'AINA_VITRUVIAN_SCULPT_V2_SIDE.png', 'SIDE'),
+          ]
+          panels = []
+          for reference_path, model_path, label in comparisons:
+              reference = Image.open(reference_path).convert('RGB')
+              model = Image.open(model_path).convert('RGB')
+              reference.thumbnail((390, 390))
+              model.thumbnail((390, 390))
+              panel = Image.new('RGB', (800, 440), 'white')
+              panel.paste(reference, ((395-reference.width)//2, 5))
+              panel.paste(model, (405+(390-model.width)//2, 5))
+              draw = ImageDraw.Draw(panel)
+              draw.text((10, 410), f'APPROVED AINA {label}', fill='black')
+              draw.text((415, 410), f'REAL VITRUVIAN SCULPT V2 {label}', fill='black')
+              panels.append(panel)
+          sheet = Image.new('RGB', (800, 440 * len(panels)), 'white')
+          for index, panel in enumerate(panels):
+              sheet.paste(panel, (0, index * 440))
+          sheet.save(qa / 'AINA_APPROVED_VS_VITRUVIAN_SCULPT_V2.png')
+
+          expression_names = ['FRONT', 'HAPPY', 'BLINK', 'AA', 'OU']
+          expression_panels = []
+          for name in expression_names:
+              path = preview / f'AINA_VITRUVIAN_SCULPT_V2_{name}.png'
+              image = Image.open(path).convert('RGB')
+              image.thumbnail((390, 390))
+              panel = Image.new('RGB', (410, 430), 'white')
+              panel.paste(image, ((410-image.width)//2, 5))
+              ImageDraw.Draw(panel).text((10, 405), name, fill='black')
+              expression_panels.append(panel)
+          expression_sheet = Image.new('RGB', (410 * 3, 430 * 2), 'white')
+          for index, panel in enumerate(expression_panels):
+              expression_sheet.paste(panel, ((index % 3) * 410, (index // 3) * 430))
+          expression_sheet.save(qa / 'AINA_VITRUVIAN_SCULPT_V2_EXPRESSION_SHEET.png')
+          PY
+
+      - name: Enforce topology, shape-key and real-output gates
+        if: success()
+        run: |
+          set -euo pipefail
+          test -s output_vitruvian_sculpt_v2/AINA_VITRUVIAN_IDENTITY_SCULPT_V2.blend
+          test -s output_vitruvian_sculpt_v2/AINA_VITRUVIAN_IDENTITY_SCULPT_V2.glb
+          test -s output_vitruvian_sculpt_v2/QA/AINA_VITRUVIAN_IDENTITY_SCULPT_V2_REPORT.json
+          test -s output_vitruvian_sculpt_v2/QA/AINA_APPROVED_VS_VITRUVIAN_SCULPT_V2.png
+          test -s output_vitruvian_sculpt_v2/QA/AINA_VITRUVIAN_SCULPT_V2_EXPRESSION_SHEET.png
+          for view in FRONT THREE_QUARTER SIDE LEFT_45 RIGHT_45 HAPPY BLINK AA OU; do
+            test -s "output_vitruvian_sculpt_v2/Preview/AINA_VITRUVIAN_SCULPT_V2_${view}.png"
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('output_vitruvian_sculpt_v2/QA/AINA_VITRUVIAN_IDENTITY_SCULPT_V2_REPORT.json').read_text())
+          assert report['real_3d_model'] is True
+          assert report['replacement_effect_art_generated'] is False
+          assert report['topology_changed'] is False
+          assert report['vertices'] == 17161
+          assert report['shape_key_count'] == 26
+          assert report['skin_sculpt']['shape_delta_preservation_max_m'] < 1.0e-5
+          assert report['skin_sculpt']['shape_delta_preservation_rms_m'] < 1.0e-6
+          assert report['identity_lock'] is False
+          assert report['visual_identity_lock'] is False
+          assert report['vrm_exported'] is False
+          print(json.dumps({
+              'vertices': report['vertices'],
+              'shape_key_count': report['shape_key_count'],
+              'max_neutral_displacement_m': report['skin_sculpt']['max_neutral_displacement_m'],
+              'rms_neutral_displacement_m': report['skin_sculpt']['rms_neutral_displacement_m'],
+              'shape_delta_preservation_max_m': report['skin_sculpt']['shape_delta_preservation_max_m'],
+              'eye_anatomy': report['eye_anatomy'],
+          }, indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-VITRUVIAN-IDENTITY-SCULPT-V2
+          path: output_vitruvian_sculpt_v2/**
+          if-no-files-found: error
+          retention-days: 30
