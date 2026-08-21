@@ -1,0 +1,97 @@
+name: Probe AINA Vitruvian FACS Identity Base
+
+on:
+  pull_request:
+    branches: [ci/aina-identity-master-base]
+    paths:
+      - RUN_AINA_VITRUVIAN_PROBE
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-vitruvian-head-probe
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch CC0 Vitruvian head GLB
+        run: |
+          set -euo pipefail
+          mkdir -p source
+          curl -fL --retry 3 \
+            https://raw.githubusercontent.com/ibrews/VitruvianGodot/main/godot_project/vitruvian_head.glb \
+            -o source/vitruvian_head.glb
+          test -s source/vitruvian_head.glb
+          ls -lh source/vitruvian_head.glb
+
+      - name: Install Blender 4.5.12 LTS and Xvfb
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 \
+            libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+          xvfb-run -a ./blender/blender --version
+
+      - name: Import and render the actual FACS head
+        run: |
+          set +e
+          mkdir -p output_vitruvian_probe/Preview output_vitruvian_probe/QA
+          xvfb-run -a -s '-screen 0 1600x900x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_vitruvian_head_probe.py -- \
+            --head source/vitruvian_head.glb \
+            --out output_vitruvian_probe 2>&1 | tee output_vitruvian_probe/QA/AINA_VITRUVIAN_PROBE_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output_vitruvian_probe/QA/AINA_VITRUVIAN_PROBE_EXIT.txt
+          exit "$code"
+
+      - name: Build real-model contact sheet
+        if: success()
+        run: |
+          python -m pip install pillow
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageDraw
+          files=[
+            Path('output_vitruvian_probe/Preview/AINA_VITRUVIAN_NEUTRAL_FRONT.png'),
+            Path('output_vitruvian_probe/Preview/AINA_VITRUVIAN_NEUTRAL_3Q_LEFT.png'),
+            Path('output_vitruvian_probe/Preview/AINA_VITRUVIAN_NEUTRAL_3Q_RIGHT.png'),
+            Path('output_vitruvian_probe/Preview/AINA_VITRUVIAN_NEUTRAL_SIDE.png'),
+            Path('output_vitruvian_probe/Preview/AINA_VITRUVIAN_OPPOSITE_DIRECTION.png'),
+          ]
+          panels=[]
+          for path in files:
+              if not path.exists(): raise SystemExit(f'missing {path}')
+              image=Image.open(path).convert('RGB'); image.thumbnail((420,420))
+              panel=Image.new('RGB',(440,460),'white'); panel.paste(image,((440-image.width)//2,5))
+              ImageDraw.Draw(panel).text((8,435),path.stem,fill='black'); panels.append(panel)
+          sheet=Image.new('RGB',(440*3,460*2),'white')
+          for index,panel in enumerate(panels): sheet.paste(panel,((index%3)*440,(index//3)*460))
+          sheet.save('output_vitruvian_probe/QA/AINA_VITRUVIAN_HEAD_PROBE_CONTACT_SHEET.png')
+          PY
+          test -s output_vitruvian_probe/AINA_VITRUVIAN_HEAD_PROBE.blend
+          test -s output_vitruvian_probe/QA/AINA_VITRUVIAN_HEAD_PROBE_REPORT.json
+          test -s output_vitruvian_probe/QA/AINA_VITRUVIAN_HEAD_PROBE_CONTACT_SHEET.png
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-VITRUVIAN-HEAD-PROBE
+          path: output_vitruvian_probe/**
+          if-no-files-found: error
+          retention-days: 30
