@@ -18,7 +18,7 @@ concurrency:
 jobs:
   identity_master:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 95
     env:
       TF_CPP_MIN_LOG_LEVEL: '2'
       MPLBACKEND: Agg
@@ -63,67 +63,68 @@ jobs:
           python src/dump_all_target_landmarks.py
           test -s output_target68/AINA_ALL_TARGET_68.json
 
-      - name: Reconstruct real AINA Identity Master v2 head
+      - name: Reconstruct real AINA Identity Master v3 head
         env:
           PYTHONPATH: ${{ github.workspace }}/vendor/GNM
         run: |
           set -euo pipefail
-          python src/fit_aina_gnm_identity_master_v2.py \
+          python src/fit_aina_gnm_identity_master_v3.py \
             --targets output_target68/AINA_ALL_TARGET_68.json \
             --front-target references/AINA_TARGET_3DDFA_SPARSE_68.json \
             --front-ref references/AINA_APPROVED_FRONT.jpg \
             --q3-ref references/AINA_APPROVED_3Q.jpg \
             --side-ref references/AINA_APPROVED_SIDE.jpg \
-            --samples 4096 \
-            --out output_identity_master_v2
+            --out output_identity_master_v3
 
-      - name: Enforce real-mesh v2 candidate gates
+      - name: Enforce real-mesh v3 candidate gates
         run: |
           set -euo pipefail
           for f in \
-            AINA_IDENTITY_MASTER_V2_FINAL_FULL.obj \
-            AINA_IDENTITY_MASTER_V2_FINAL_FULL.glb \
-            AINA_IDENTITY_MASTER_V2_FINAL_SKIN.obj \
-            AINA_IDENTITY_MASTER_V2_REPORT.json; do
-              test -s "output_identity_master_v2/$f"
+            AINA_IDENTITY_MASTER_V3_FINAL_FULL.obj \
+            AINA_IDENTITY_MASTER_V3_FINAL_FULL.glb \
+            AINA_IDENTITY_MASTER_V3_FINAL_SKIN.obj \
+            AINA_IDENTITY_MASTER_V3_IDENTITY.npy \
+            AINA_IDENTITY_MASTER_V3_NEUTRAL_EXPRESSION.npy \
+            AINA_IDENTITY_MASTER_V3_REPORT.json; do
+              test -s "output_identity_master_v3/$f"
           done
           for f in \
-            AINA_APPROVED_VS_IDENTITY_MASTER_V2_FRONT.png \
-            AINA_APPROVED_VS_IDENTITY_MASTER_V2_THREE_QUARTER.png \
-            AINA_APPROVED_VS_IDENTITY_MASTER_V2_SIDE.png \
-            AINA_IDENTITY_MASTER_V2_STAGE_CONTACT_SHEET.png \
-            AINA_IDENTITY_MASTER_V2_5VIEW.png; do
-              test -s "output_identity_master_v2/QA/$f"
+            AINA_APPROVED_VS_IDENTITY_MASTER_V3_FRONT.png \
+            AINA_APPROVED_VS_IDENTITY_MASTER_V3_THREE_QUARTER.png \
+            AINA_APPROVED_VS_IDENTITY_MASTER_V3_SIDE.png \
+            AINA_IDENTITY_MASTER_V3_3VIEW.png \
+            AINA_IDENTITY_MASTER_V3_5VIEW.png; do
+              test -s "output_identity_master_v3/QA/$f"
           done
           python - <<'PY'
           import json
           from pathlib import Path
-          p=Path('output_identity_master_v2/AINA_IDENTITY_MASTER_V2_REPORT.json')
+          p=Path('output_identity_master_v3/AINA_IDENTITY_MASTER_V3_REPORT.json')
           d=json.loads(p.read_text())
           assert d['real_mesh_reconstructed'] is True
           assert d['topology_changed'] is False
           assert d['identity_lock'] is False
           assert d['vertices'] > 10000
-          assert d['final_mesh_health']['degenerate'] == 0
-          assert d['best_z_norm'] > 1.0
+          assert d['mesh_health']['degenerate'] == 0
+          assert d['neutral_expression_baked'] is True
+          assert d['neutral_expression_norm'] > 0.01
           print(json.dumps({
               'candidate': d['candidate'],
-              'vertices': d['vertices'],
-              'triangles': d['triangles'],
-              'best_z_norm': d['best_z_norm'],
-              'fitted_delta_z_norm': d['fitted_delta_z_norm'],
-              'fit_rmse_after': d['fit_rmse_after'],
+              'best_pool': d['best_pool'],
+              'sample_count': d['sample_count'],
+              'neutral_expression_norm': d['neutral_expression_norm'],
+              'final_metrics': d['final_metrics'],
               'final_ratio_penalty': d['final_ratio_penalty'],
-              'final_mesh_health': d['final_mesh_health'],
+              'mesh_health': d['mesh_health'],
           }, indent=2))
           PY
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: AINA-IDENTITY-MASTER-GNM-V2
+          name: AINA-IDENTITY-MASTER-GNM-V3
           path: |
             output_target68/**
-            output_identity_master_v2/**
+            output_identity_master_v3/**
           if-no-files-found: error
           retention-days: 30
