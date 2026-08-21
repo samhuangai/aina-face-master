@@ -1,0 +1,131 @@
+name: Fit AINA Identity on Vitruvian FACS Head
+
+on:
+  pull_request:
+    branches: [ci/aina-identity-master-base]
+    paths:
+      - RUN_AINA_VITRUVIAN_IDENTITY_FIT
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-vitruvian-identity-fit
+  cancel-in-progress: true
+
+jobs:
+  identity_fit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install landmark and image dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy==1.26.4 pillow face-alignment
+
+      - name: Materialize approved AINA references
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+
+      - name: Fetch CC0 Vitruvian FACS head
+        run: |
+          set -euo pipefail
+          mkdir -p source
+          curl -fL --retry 3 https://raw.githubusercontent.com/ibrews/VitruvianGodot/main/godot_project/vitruvian_head.glb -o source/vitruvian_head.glb
+          test -s source/vitruvian_head.glb
+
+      - name: Install Blender 4.5.12 LTS and Xvfb
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 2 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Render neutral real-model source views
+        run: |
+          set -euo pipefail
+          mkdir -p output_vitruvian_fit/Preview output_vitruvian_fit/QA
+          xvfb-run -a -s '-screen 0 1600x900x24' "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_vitruvian_head_probe_v2.py -- \
+            --head source/vitruvian_head.glb --out output_vitruvian_fit
+          test -s output_vitruvian_fit/AINA_VITRUVIAN_HEAD_PROBE.blend
+          test -s output_vitruvian_fit/Preview/AINA_VITRUVIAN_NEUTRAL_FRONT.png
+          test -s output_vitruvian_fit/Preview/AINA_VITRUVIAN_NEUTRAL_3Q_LEFT.png
+          test -s output_vitruvian_fit/Preview/AINA_VITRUVIAN_NEUTRAL_SIDE.png
+
+      - name: Extract approved and model multi-view landmarks
+        run: |
+          set -euo pipefail
+          python src/extract_aina_vitruvian_fit_landmarks.py \
+            --approved-front references/AINA_APPROVED_FRONT.jpg \
+            --approved-q3 references/AINA_APPROVED_3Q.jpg \
+            --approved-side references/AINA_APPROVED_SIDE.jpg \
+            --model-front output_vitruvian_fit/Preview/AINA_VITRUVIAN_NEUTRAL_FRONT.png \
+            --model-q3 output_vitruvian_fit/Preview/AINA_VITRUVIAN_NEUTRAL_3Q_LEFT.png \
+            --model-side output_vitruvian_fit/Preview/AINA_VITRUVIAN_NEUTRAL_SIDE.png \
+            --front-target references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --out output_vitruvian_fit/QA
+          test -s output_vitruvian_fit/QA/AINA_VITRUVIAN_FIT_LANDMARKS.json
+
+      - name: Fit actual topology to AINA front, 3Q and side
+        run: |
+          set +e
+          xvfb-run -a -s '-screen 0 1600x900x24' "$BLENDER" output_vitruvian_fit/AINA_VITRUVIAN_HEAD_PROBE.blend \
+            --background --python-exit-code 1 --python src/blender/aina_vitruvian_identity_fit.py -- \
+            --landmarks output_vitruvian_fit/QA/AINA_VITRUVIAN_FIT_LANDMARKS.json \
+            --out output_vitruvian_fit 2>&1 | tee output_vitruvian_fit/QA/AINA_VITRUVIAN_IDENTITY_FIT_BUILD.log
+          code=${PIPESTATUS[0]}; echo "$code" > output_vitruvian_fit/QA/AINA_VITRUVIAN_IDENTITY_FIT_EXIT.txt; exit "$code"
+
+      - name: Build approved-versus-real-model contact sheet
+        if: success()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageDraw
+          pairs=[
+            ('references/AINA_APPROVED_FRONT.jpg','output_vitruvian_fit/Preview/AINA_VITRUVIAN_FITTED_FRONT.png','FRONT'),
+            ('references/AINA_APPROVED_3Q.jpg','output_vitruvian_fit/Preview/AINA_VITRUVIAN_FITTED_THREE_QUARTER.png','3Q'),
+            ('references/AINA_APPROVED_SIDE.jpg','output_vitruvian_fit/Preview/AINA_VITRUVIAN_FITTED_SIDE.png','SIDE'),
+          ]
+          panels=[]
+          for ref_path,model_path,label in pairs:
+              ref=Image.open(ref_path).convert('RGB'); model=Image.open(model_path).convert('RGB')
+              ref.thumbnail((360,360)); model.thumbnail((360,360))
+              panel=Image.new('RGB',(740,405),'white'); panel.paste(ref,((360-ref.width)//2,5)); panel.paste(model,(370+(360-model.width)//2,5))
+              draw=ImageDraw.Draw(panel); draw.text((10,375),f'APPROVED {label}',fill='black'); draw.text((380,375),f'REAL FITTED {label}',fill='black'); panels.append(panel)
+          sheet=Image.new('RGB',(740,405*3),'white')
+          for i,panel in enumerate(panels): sheet.paste(panel,(0,i*405))
+          sheet.save('output_vitruvian_fit/QA/AINA_VITRUVIAN_IDENTITY_FIT_CONTACT_SHEET.png')
+          PY
+          test -s output_vitruvian_fit/AINA_VITRUVIAN_IDENTITY_FIT.blend
+          test -s output_vitruvian_fit/AINA_VITRUVIAN_IDENTITY_FIT.glb
+          test -s output_vitruvian_fit/QA/AINA_VITRUVIAN_IDENTITY_FIT_REPORT.json
+          test -s output_vitruvian_fit/QA/AINA_VITRUVIAN_IDENTITY_FIT_CONTACT_SHEET.png
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-VITRUVIAN-IDENTITY-FIT
+          path: output_vitruvian_fit/**
+          if-no-files-found: error
+          retention-days: 30
