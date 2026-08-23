@@ -1,0 +1,293 @@
+name: Build AINA Rain Identity Reconstruction v3
+
+on:
+  pull_request:
+    branches: [ci/aina-rain-reconstruction-base]
+    paths:
+      - RUN_AINA_RAIN_IDENTITY_RECONSTRUCTION_V3
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-rain-identity-reconstruction-v3
+  cancel-in-progress: true
+
+jobs:
+  reconstruct_v3:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install landmark, artifact and image dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy==1.26.4 pillow requests face-alignment
+
+      - name: Materialize approved AINA references
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+          test -s references/AINA_APPROVED_FRONT.jpg
+          test -s references/AINA_APPROVED_3Q.jpg
+          test -s references/AINA_APPROVED_SIDE.jpg
+
+      - name: Download complete Rain approved-appearance source
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import io
+          import os
+          import requests
+          import shutil
+          import zipfile
+          from pathlib import Path, PurePosixPath
+
+          repository = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+          }
+          response = requests.get(
+              f'https://api.github.com/repos/{repository}/actions/artifacts',
+              headers=headers,
+              params={'name': 'AINA-RAIN-APPROVED-APPEARANCE-CANDIDATE', 'per_page': 100},
+              timeout=30,
+          )
+          response.raise_for_status()
+          artifacts = sorted(
+              [item for item in response.json().get('artifacts', []) if not item.get('expired')],
+              key=lambda item: item['id'],
+              reverse=True,
+          )
+          if not artifacts:
+              raise SystemExit('No approved-appearance artifact is available')
+
+          required = {
+              'candidate.blend': 'AINA_RAIN_APPROVED_APPEARANCE_CANDIDATE.blend',
+              'candidate_report.json': 'AINA_RAIN_APPROVED_APPEARANCE_REPORT.json',
+              'model_front.png': 'AINA_RAIN_APPEARANCE_CLAY_FRONT.png',
+              'model_q3.png': 'AINA_RAIN_APPEARANCE_CLAY_THREE_QUARTER.png',
+              'model_side.png': 'AINA_RAIN_APPEARANCE_CLAY_SIDE.png',
+          }
+          selected = None
+          archive_bytes = None
+          selected_members = None
+          for artifact in artifacts:
+              archive = requests.get(
+                  artifact['archive_download_url'],
+                  headers=headers,
+                  timeout=300,
+                  allow_redirects=True,
+              )
+              if not archive.ok:
+                  continue
+              try:
+                  with zipfile.ZipFile(io.BytesIO(archive.content)) as zf:
+                      members = {
+                          destination: next(
+                              (name for name in zf.namelist() if PurePosixPath(name).name == source),
+                              None,
+                          )
+                          for destination, source in required.items()
+                      }
+              except zipfile.BadZipFile:
+                  continue
+              if all(members.values()):
+                  selected = artifact
+                  archive_bytes = archive.content
+                  selected_members = members
+                  break
+          if selected is None or archive_bytes is None or selected_members is None:
+              raise SystemExit('No complete approved-appearance artifact contains the required BLEND, report and clay views')
+
+          stable = Path('source_appearance')
+          if stable.exists():
+              shutil.rmtree(stable)
+          stable.mkdir()
+          with zipfile.ZipFile(io.BytesIO(archive_bytes)) as zf:
+              for destination, member in selected_members.items():
+                  with zf.open(member) as source, (stable / destination).open('wb') as target:
+                      shutil.copyfileobj(source, target)
+          (stable / 'artifact_id.txt').write_text(str(selected['id']))
+          print({'artifact_id': selected['id'], 'members': selected_members})
+          PY
+          for file in candidate.blend candidate_report.json model_front.png model_q3.png model_side.png; do
+            test -s "source_appearance/$file"
+          done
+
+      - name: Extract approved and actual multi-view landmarks
+        run: |
+          set -euo pipefail
+          mkdir -p output_rain_reconstruction_v3/QA
+          python src/extract_aina_rain_identity_landmarks.py \
+            --approved-front references/AINA_APPROVED_FRONT.jpg \
+            --approved-q3 references/AINA_APPROVED_3Q.jpg \
+            --approved-side references/AINA_APPROVED_SIDE.jpg \
+            --model-front source_appearance/model_front.png \
+            --model-q3 source_appearance/model_q3.png \
+            --model-side source_appearance/model_side.png \
+            --front-target references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --out output_rain_reconstruction_v3/QA
+          test -s output_rain_reconstruction_v3/QA/AINA_RAIN_IDENTITY_LANDMARKS.json
+
+      - name: Install Blender 4.5.12 LTS and software rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Reconstruct mature AINA proportions on the same Rain Mesh
+        run: |
+          set +e
+          mkdir -p output_rain_reconstruction_v3/Preview output_rain_reconstruction_v3/QA
+          xvfb-run -a -s '-screen 0 1600x900x24' "$BLENDER" \
+            source_appearance/candidate.blend \
+            --background --python-exit-code 1 \
+            --python src/blender/aina_rain_identity_reconstruction_v3.py -- \
+            --landmarks output_rain_reconstruction_v3/QA/AINA_RAIN_IDENTITY_LANDMARKS.json \
+            --out output_rain_reconstruction_v3 \
+            2>&1 | tee output_rain_reconstruction_v3/QA/AINA_RAIN_RECONSTRUCTION_V3_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output_rain_reconstruction_v3/QA/AINA_RAIN_RECONSTRUCTION_V3_EXIT.txt
+          exit "$code"
+
+      - name: Build actual-model comparison and expression sheets
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw
+
+          output = Path('output_rain_reconstruction_v3')
+          preview = output / 'Preview'
+          qa = output / 'QA'
+          pairs = [
+              (Path('references/AINA_APPROVED_FRONT.jpg'), preview / 'AINA_RAIN_APPEARANCE_FRONT.png', 'FRONT'),
+              (Path('references/AINA_APPROVED_3Q.jpg'), preview / 'AINA_RAIN_APPEARANCE_THREE_QUARTER.png', '3Q'),
+              (Path('references/AINA_APPROVED_SIDE.jpg'), preview / 'AINA_RAIN_APPEARANCE_SIDE.png', 'SIDE'),
+          ]
+          panels = []
+          for reference_path, model_path, label in pairs:
+              reference = Image.open(reference_path).convert('RGB')
+              model = Image.open(model_path).convert('RGB')
+              reference.thumbnail((430, 430))
+              model.thumbnail((430, 430))
+              panel = Image.new('RGB', (900, 480), 'white')
+              panel.paste(reference, ((440-reference.width)//2, 6))
+              panel.paste(model, (455+(440-model.width)//2, 6))
+              draw = ImageDraw.Draw(panel)
+              draw.text((10, 450), f'APPROVED AINA {label}', fill='black')
+              draw.text((465, 450), f'REAL RAIN RECONSTRUCTION V3 {label}', fill='black')
+              panels.append(panel)
+          comparison = Image.new('RGB', (900, 1440), 'white')
+          for index, panel in enumerate(panels):
+              comparison.paste(panel, (0, index*480))
+          comparison.save(qa / 'AINA_APPROVED_VS_RAIN_RECONSTRUCTION_V3.png')
+
+          items = [
+              ('NEUTRAL', preview / 'AINA_RAIN_APPEARANCE_FRONT.png'),
+              ('HAPPY', preview / 'AINA_RAIN_APPEARANCE_HAPPY.png'),
+              ('SAD', preview / 'AINA_RAIN_APPEARANCE_SAD.png'),
+              ('BLINK', preview / 'AINA_RAIN_APPEARANCE_BLINK.png'),
+              ('CLAY FRONT', preview / 'AINA_RAIN_APPEARANCE_CLAY_FRONT.png'),
+              ('CLAY 3Q', preview / 'AINA_RAIN_APPEARANCE_CLAY_THREE_QUARTER.png'),
+              ('CLAY SIDE', preview / 'AINA_RAIN_APPEARANCE_CLAY_SIDE.png'),
+          ]
+          review_panels = []
+          for label, path in items:
+              image = Image.open(path).convert('RGB')
+              image.thumbnail((400, 400))
+              panel = Image.new('RGB', (420, 440), 'white')
+              panel.paste(image, ((420-image.width)//2, 5))
+              ImageDraw.Draw(panel).text((10, 415), label, fill='black')
+              review_panels.append(panel)
+          review = Image.new('RGB', (1260, 1320), 'white')
+          for index, panel in enumerate(review_panels):
+              review.paste(panel, ((index%3)*420, (index//3)*440))
+          review.save(qa / 'AINA_RAIN_RECONSTRUCTION_V3_EXPRESSION_AND_CLAY.png')
+          PY
+          test -s output_rain_reconstruction_v3/QA/AINA_APPROVED_VS_RAIN_RECONSTRUCTION_V3.png
+          test -s output_rain_reconstruction_v3/QA/AINA_RAIN_RECONSTRUCTION_V3_EXPRESSION_AND_CLAY.png
+
+      - name: Enforce same-topology and expression preservation gates
+        run: |
+          set -euo pipefail
+          test -s output_rain_reconstruction_v3/AINA_RAIN_IDENTITY_RECONSTRUCTION_V3.blend
+          test -s output_rain_reconstruction_v3/AINA_RAIN_IDENTITY_RECONSTRUCTION_V3.glb
+          test -s output_rain_reconstruction_v3/QA/AINA_RAIN_IDENTITY_RECONSTRUCTION_V3_REPORT.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          source = json.loads(Path('source_appearance/candidate_report.json').read_text())
+          report = json.loads(Path('output_rain_reconstruction_v3/QA/AINA_RAIN_IDENTITY_RECONSTRUCTION_V3_REPORT.json').read_text())
+          assert report['real_3d_model'] is True
+          assert report['replacement_effect_art_generated'] is False
+          assert report['skin_topology_changed'] is False
+          assert report['armature_preserved'] is True
+          assert report['skin_weights_preserved'] is True
+          assert report['uvs_preserved'] is True
+          assert report['vertices'] == source['vertices'] == 6868
+          assert report['triangles'] == source['triangles'] == 12634
+          assert report['source_vertices'] == report['vertices']
+          assert report['source_triangles'] == report['triangles']
+          preservation = report['shape_key_preservation']
+          assert preservation['shape_key_count'] == 23
+          assert preservation['shape_delta_preservation_max_m'] < 1.0e-5
+          assert report['maturity_reconstruction']['max_displacement_m'] <= 0.0241
+          assert report['total_skin_displacement_max_m'] < 0.080
+          plan = report['ratio_plan']
+          assert plan['eye_width_scale'] < 0.90
+          assert plan['eye_height_scale'] < 0.82
+          assert plan['cranium_width_scale'] < 0.90
+          assert plan['cranium_height_scale'] < 0.90
+          assert report['identity_lock'] is False
+          assert report['visual_identity_lock'] is False
+          assert report['candidate'] is True
+          assert report['vrm_exported'] is False
+          print(json.dumps({
+              'landmark_views': report['landmark_views'],
+              'ratio_plan': plan,
+              'maturity_reconstruction': report['maturity_reconstruction'],
+              'shape_key_preservation': preservation,
+              'total_skin_displacement_max_m': report['total_skin_displacement_max_m'],
+          }, indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-RAIN-IDENTITY-RECONSTRUCTION-V3
+          path: |
+            output_rain_reconstruction_v3/**
+            source_appearance/artifact_id.txt
+          if-no-files-found: error
+          retention-days: 30
