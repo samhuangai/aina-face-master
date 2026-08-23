@@ -55,7 +55,7 @@ jobs:
           import requests
           import shutil
           import zipfile
-          from pathlib import Path
+          from pathlib import Path, PurePosixPath
 
           repository = os.environ['GITHUB_REPOSITORY']
           token = os.environ['GH_TOKEN']
@@ -71,37 +71,67 @@ jobs:
               timeout=30,
           )
           response.raise_for_status()
-          artifacts = [item for item in response.json().get('artifacts', []) if not item.get('expired')]
+          artifacts = sorted(
+              [item for item in response.json().get('artifacts', []) if not item.get('expired')],
+              key=lambda item: item['id'],
+              reverse=True,
+          )
           if not artifacts:
               raise SystemExit('No non-expired AINA-RAIN-IDENTITY-MASTER-V2 artifact is available')
-          artifact = max(artifacts, key=lambda item: item['id'])
-          archive = requests.get(
-              artifact['archive_download_url'],
-              headers=headers,
-              timeout=240,
-              allow_redirects=True,
-          )
-          archive.raise_for_status()
 
-          extracted = Path('source_v2_artifact')
-          if extracted.exists():
-              shutil.rmtree(extracted)
-          extracted.mkdir()
-          with zipfile.ZipFile(io.BytesIO(archive.content)) as zf:
-              zf.extractall(extracted)
+          required = {
+              'candidate.blend': 'AINA_RAIN_IDENTITY_MASTER_V2.blend',
+              'candidate_report.json': 'AINA_RAIN_IDENTITY_MASTER_V2_REPORT.json',
+          }
+          selected = None
+          selected_archive = None
+          selected_members = None
+          for artifact in artifacts:
+              archive = requests.get(
+                  artifact['archive_download_url'],
+                  headers=headers,
+                  timeout=240,
+                  allow_redirects=True,
+              )
+              if not archive.ok:
+                  continue
+              try:
+                  with zipfile.ZipFile(io.BytesIO(archive.content)) as zf:
+                      members = {
+                          destination: next(
+                              (
+                                  name for name in zf.namelist()
+                                  if PurePosixPath(name).name == source
+                              ),
+                              None,
+                          )
+                          for destination, source in required.items()
+                      }
+              except zipfile.BadZipFile:
+                  continue
+              if all(members.values()):
+                  selected = artifact
+                  selected_archive = archive.content
+                  selected_members = members
+                  break
 
-          def locate(name: str) -> Path:
-              matches = list(extracted.rglob(name))
-              if not matches:
-                  raise FileNotFoundError(name)
-              return matches[0]
+          if selected is None or selected_archive is None or selected_members is None:
+              raise SystemExit('No complete successful Rain Identity Master v2 artifact contains the required BLEND and report')
 
           stable = Path('source_v2')
-          stable.mkdir(exist_ok=True)
-          shutil.copy2(locate('AINA_RAIN_IDENTITY_MASTER_V2.blend'), stable / 'candidate.blend')
-          shutil.copy2(locate('AINA_RAIN_IDENTITY_MASTER_V2_REPORT.json'), stable / 'candidate_report.json')
-          (stable / 'artifact_id.txt').write_text(str(artifact['id']))
-          print({'artifact_id': artifact['id'], 'artifact_size': artifact['size_in_bytes']})
+          if stable.exists():
+              shutil.rmtree(stable)
+          stable.mkdir()
+          with zipfile.ZipFile(io.BytesIO(selected_archive)) as zf:
+              for destination, member in selected_members.items():
+                  with zf.open(member) as source, (stable / destination).open('wb') as target:
+                      shutil.copyfileobj(source, target)
+          (stable / 'artifact_id.txt').write_text(str(selected['id']))
+          print({
+              'artifact_id': selected['id'],
+              'artifact_size': selected['size_in_bytes'],
+              'members': selected_members,
+          })
           PY
           test -s source_v2/candidate.blend
           test -s source_v2/candidate_report.json
