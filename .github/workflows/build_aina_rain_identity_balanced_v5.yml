@@ -1,0 +1,276 @@
+name: Build AINA Rain Identity Balanced v5
+
+on:
+  pull_request:
+    branches: [ci/aina-rain-balanced-v5-base]
+    paths:
+      - RUN_AINA_RAIN_IDENTITY_BALANCED_V5
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-rain-identity-balanced-v5
+  cancel-in-progress: true
+
+jobs:
+  balanced_v5:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+      MPLBACKEND: Agg
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install artifact and image dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install requests pillow
+
+      - name: Materialize approved AINA references
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+          test -s references/AINA_APPROVED_FRONT.jpg
+          test -s references/AINA_APPROVED_3Q.jpg
+          test -s references/AINA_APPROVED_SIDE.jpg
+
+      - name: Download successful Rain reconstruction v3 source
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import io
+          import os
+          import shutil
+          import zipfile
+          from pathlib import Path
+          import requests
+
+          repository = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+          }
+          name = 'AINA-RAIN-IDENTITY-RECONSTRUCTION-V3'
+          url = f'https://api.github.com/repos/{repository}/actions/artifacts?name={name}&per_page=100'
+          response = requests.get(url, headers=headers, timeout=45)
+          response.raise_for_status()
+          artifacts = [item for item in response.json().get('artifacts', []) if not item.get('expired')]
+          if not artifacts:
+              raise SystemExit(f'No unexpired {name} artifact is available')
+          artifact = max(artifacts, key=lambda item: item['id'])
+          archive = requests.get(
+              artifact['archive_download_url'],
+              headers=headers,
+              timeout=300,
+              allow_redirects=True,
+          )
+          archive.raise_for_status()
+          root = Path('source_v3_artifact')
+          if root.exists():
+              shutil.rmtree(root)
+          root.mkdir()
+          with zipfile.ZipFile(io.BytesIO(archive.content)) as zf:
+              zf.extractall(root)
+
+          def find(name):
+              matches = list(root.rglob(name))
+              if not matches:
+                  raise FileNotFoundError(name)
+              return matches[0]
+
+          stable = Path('source_v3')
+          stable.mkdir(exist_ok=True)
+          files = {
+              'AINA_RAIN_IDENTITY_RECONSTRUCTION_V3.blend': 'candidate.blend',
+              'AINA_RAIN_IDENTITY_RECONSTRUCTION_V3_REPORT.json': 'source_report.json',
+              'AINA_RAIN_APPEARANCE_FRONT.png': 'source_front.png',
+              'AINA_RAIN_APPEARANCE_THREE_QUARTER.png': 'source_three_quarter.png',
+              'AINA_RAIN_APPEARANCE_SIDE.png': 'source_side.png',
+          }
+          for source_name, destination_name in files.items():
+              shutil.copy2(find(source_name), stable / destination_name)
+          (stable / 'artifact_id.txt').write_text(str(artifact['id']), encoding='utf-8')
+          print({'artifact_id': artifact['id'], 'size': artifact['size_in_bytes']})
+          PY
+          test -s source_v3/candidate.blend
+          test -s source_v3/source_report.json
+          test -s source_v3/source_front.png
+          test -s source_v3/source_three_quarter.png
+          test -s source_v3/source_side.png
+
+      - name: Install Blender 4.5.12 LTS and software rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Apply balanced AINA identity correction to the real Mesh
+        run: |
+          set +e
+          mkdir -p output_rain_balanced_v5/QA output_rain_balanced_v5/Preview
+          xvfb-run -a -s '-screen 0 1600x900x24' "$BLENDER" \
+            source_v3/candidate.blend \
+            --background --python-exit-code 1 \
+            --python src/blender/aina_rain_identity_balanced_v5.py -- \
+            --source-report source_v3/source_report.json \
+            --out output_rain_balanced_v5 \
+            2>&1 | tee output_rain_balanced_v5/QA/AINA_RAIN_IDENTITY_BALANCED_V5_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output_rain_balanced_v5/QA/AINA_RAIN_IDENTITY_BALANCED_V5_EXIT.txt
+          exit "$code"
+
+      - name: Build actual-model comparison, expression and clay sheets
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw
+
+          root = Path('output_rain_balanced_v5')
+          preview = root / 'Preview'
+          qa = root / 'QA'
+
+          pairs = [
+              ('references/AINA_APPROVED_FRONT.jpg', preview / 'AINA_RAIN_APPEARANCE_FRONT.png', 'FRONT'),
+              ('references/AINA_APPROVED_3Q.jpg', preview / 'AINA_RAIN_APPEARANCE_THREE_QUARTER.png', '3Q'),
+              ('references/AINA_APPROVED_SIDE.jpg', preview / 'AINA_RAIN_APPEARANCE_SIDE.png', 'SIDE'),
+          ]
+          panels = []
+          for ref_path, model_path, label in pairs:
+              ref = Image.open(ref_path).convert('RGB')
+              model = Image.open(model_path).convert('RGB')
+              ref.thumbnail((430, 430))
+              model.thumbnail((430, 430))
+              panel = Image.new('RGB', (900, 485), 'white')
+              panel.paste(ref, ((440 - ref.width) // 2, 5))
+              panel.paste(model, (455 + (440 - model.width) // 2, 5))
+              draw = ImageDraw.Draw(panel)
+              draw.text((10, 455), f'APPROVED AINA {label}', fill='black')
+              draw.text((465, 455), f'REAL RAIN BALANCED V5 {label}', fill='black')
+              panels.append(panel)
+          approved_sheet = Image.new('RGB', (900, 485 * len(panels)), 'white')
+          for index, panel in enumerate(panels):
+              approved_sheet.paste(panel, (0, index * 485))
+          approved_sheet.save(qa / 'AINA_APPROVED_VS_RAIN_BALANCED_V5.png')
+
+          before = Image.open('source_v3/source_front.png').convert('RGB')
+          after = Image.open(preview / 'AINA_RAIN_APPEARANCE_FRONT.png').convert('RGB')
+          before.thumbnail((520, 520))
+          after.thumbnail((520, 520))
+          change = Image.new('RGB', (1080, 570), 'white')
+          change.paste(before, ((540 - before.width) // 2, 5))
+          change.paste(after, (540 + (540 - after.width) // 2, 5))
+          draw = ImageDraw.Draw(change)
+          draw.text((10, 540), 'SOURCE RECONSTRUCTION V3', fill='black')
+          draw.text((550, 540), 'BALANCED IDENTITY V5', fill='black')
+          change.save(qa / 'AINA_RAIN_V3_VS_V5_FRONT.png')
+
+          expression_names = ['FRONT', 'HAPPY', 'SAD', 'BLINK']
+          expression_panels = []
+          for name in expression_names:
+              image = Image.open(preview / f'AINA_RAIN_APPEARANCE_{name}.png').convert('RGB')
+              image.thumbnail((400, 400))
+              panel = Image.new('RGB', (420, 440), 'white')
+              panel.paste(image, ((420 - image.width) // 2, 5))
+              ImageDraw.Draw(panel).text((10, 415), name, fill='black')
+              expression_panels.append(panel)
+          expression_sheet = Image.new('RGB', (840, 880), 'white')
+          for index, panel in enumerate(expression_panels):
+              expression_sheet.paste(panel, ((index % 2) * 420, (index // 2) * 440))
+          expression_sheet.save(qa / 'AINA_RAIN_BALANCED_V5_EXPRESSIONS.png')
+
+          clay_names = ['CLAY_FRONT', 'CLAY_THREE_QUARTER', 'CLAY_SIDE']
+          clay_panels = []
+          for name in clay_names:
+              image = Image.open(preview / f'AINA_RAIN_APPEARANCE_{name}.png').convert('RGB')
+              image.thumbnail((410, 410))
+              panel = Image.new('RGB', (430, 450), 'white')
+              panel.paste(image, ((430 - image.width) // 2, 5))
+              ImageDraw.Draw(panel).text((10, 425), name, fill='black')
+              clay_panels.append(panel)
+          clay_sheet = Image.new('RGB', (1290, 450), 'white')
+          for index, panel in enumerate(clay_panels):
+              clay_sheet.paste(panel, (index * 430, 0))
+          clay_sheet.save(qa / 'AINA_RAIN_BALANCED_V5_CLAY.png')
+          PY
+          test -s output_rain_balanced_v5/QA/AINA_APPROVED_VS_RAIN_BALANCED_V5.png
+          test -s output_rain_balanced_v5/QA/AINA_RAIN_V3_VS_V5_FRONT.png
+          test -s output_rain_balanced_v5/QA/AINA_RAIN_BALANCED_V5_EXPRESSIONS.png
+          test -s output_rain_balanced_v5/QA/AINA_RAIN_BALANCED_V5_CLAY.png
+
+      - name: Enforce topology, rig and expression-preservation gates
+        run: |
+          set -euo pipefail
+          test -s output_rain_balanced_v5/AINA_RAIN_IDENTITY_BALANCED_V5.blend
+          test -s output_rain_balanced_v5/AINA_RAIN_IDENTITY_BALANCED_V5.glb
+          test -s output_rain_balanced_v5/QA/AINA_RAIN_IDENTITY_BALANCED_V5_REPORT.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('output_rain_balanced_v5/QA/AINA_RAIN_IDENTITY_BALANCED_V5_REPORT.json').read_text())
+          assert report['real_3d_model'] is True
+          assert report['replacement_effect_art_generated'] is False
+          assert report['skin_topology_changed'] is False
+          assert report['armature_preserved'] is True
+          assert report['skin_weights_preserved'] is True
+          assert report['uvs_preserved'] is True
+          assert report['vertices'] == report['source_vertices'] == 6868
+          assert report['triangles'] == report['source_triangles'] == 12634
+          assert report['head_region_vertices'] > 1000
+          assert report['source_shape_key_count'] >= 23
+          preservation = report['shape_key_preservation']
+          assert preservation['shape_key_count'] >= 23
+          assert preservation['shape_delta_preservation_max_m'] < 1.0e-5
+          assert preservation['shape_delta_preservation_rms_m'] < 1.0e-6
+          assert report['balanced_identity_pass']['max_displacement_m'] <= 0.0121
+          assert report['total_skin_displacement_max_m'] <= 0.0121
+          assert report['identity_lock'] is False
+          assert report['visual_identity_lock'] is False
+          assert report['production_release'] is False
+          assert report['candidate'] is True
+          assert report['vrm_exported'] is False
+          print(json.dumps({
+              'vertices': report['vertices'],
+              'triangles': report['triangles'],
+              'shape_keys': preservation['shape_key_count'],
+              'shape_delta_max_m': preservation['shape_delta_preservation_max_m'],
+              'balanced_max_m': report['balanced_identity_pass']['max_displacement_m'],
+              'eye_system_max_m': report['eye_system_transform']['max_displacement_m'],
+              'hair_max_m': report['hair_transform']['max_displacement_m'],
+          }, indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-RAIN-IDENTITY-BALANCED-V5
+          path: |
+            output_rain_balanced_v5/**
+            source_v3/artifact_id.txt
+          if-no-files-found: error
+          retention-days: 30
