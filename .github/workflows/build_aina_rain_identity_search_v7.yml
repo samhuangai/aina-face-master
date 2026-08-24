@@ -1,0 +1,396 @@
+name: Build AINA Rain Identity Search v7
+
+on:
+  pull_request:
+    branches: [ci/aina-rain-search-v7-base]
+    paths:
+      - RUN_AINA_RAIN_IDENTITY_SEARCH_V7
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-rain-identity-search-v7
+  cancel-in-progress: true
+
+jobs:
+  search_v7:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+      MPLBACKEND: Agg
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install artifact, landmark and image dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install requests pillow
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy==1.26.4 face-alignment
+
+      - name: Materialize approved AINA references
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+          test -s references/AINA_APPROVED_FRONT.jpg
+          test -s references/AINA_APPROVED_3Q.jpg
+          test -s references/AINA_APPROVED_SIDE.jpg
+          test -s references/AINA_TARGET_3DDFA_SPARSE_68.json
+
+      - name: Download successful convergence-v6 source
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import io
+          import os
+          import shutil
+          import zipfile
+          from pathlib import Path
+          import requests
+
+          repository = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+          }
+          name = 'AINA-RAIN-IDENTITY-CONVERGENCE-V6'
+          url = f'https://api.github.com/repos/{repository}/actions/artifacts?name={name}&per_page=100'
+          response = requests.get(url, headers=headers, timeout=45)
+          response.raise_for_status()
+          artifacts = [item for item in response.json().get('artifacts', []) if not item.get('expired')]
+          if not artifacts:
+              raise SystemExit(f'No unexpired {name} artifact is available')
+          artifact = max(artifacts, key=lambda item: item['id'])
+          archive = requests.get(
+              artifact['archive_download_url'], headers=headers,
+              timeout=300, allow_redirects=True,
+          )
+          archive.raise_for_status()
+          root = Path('source_v6_artifact')
+          if root.exists(): shutil.rmtree(root)
+          root.mkdir()
+          with zipfile.ZipFile(io.BytesIO(archive.content)) as zf:
+              zf.extractall(root)
+
+          def find(name):
+              matches = list(root.rglob(name))
+              if not matches: raise FileNotFoundError(name)
+              return matches[0]
+
+          stable = Path('source_v6')
+          stable.mkdir(exist_ok=True)
+          files = {
+              'AINA_RAIN_IDENTITY_CONVERGENCE_V6.blend': 'candidate.blend',
+              'AINA_RAIN_IDENTITY_CONVERGENCE_V6_REPORT.json': 'source_report.json',
+              'AINA_RAIN_APPEARANCE_FRONT.png': 'source_front.png',
+              'AINA_RAIN_APPEARANCE_THREE_QUARTER.png': 'source_three_quarter.png',
+              'AINA_RAIN_APPEARANCE_SIDE.png': 'source_side.png',
+          }
+          for source_name, destination_name in files.items():
+              shutil.copy2(find(source_name), stable / destination_name)
+          (stable / 'artifact_id.txt').write_text(str(artifact['id']), encoding='utf-8')
+          print({'artifact_id': artifact['id'], 'size': artifact['size_in_bytes']})
+          PY
+          test -s source_v6/candidate.blend
+          test -s source_v6/source_report.json
+          test -s source_v6/source_front.png
+          test -s source_v6/source_three_quarter.png
+          test -s source_v6/source_side.png
+
+      - name: Extract baseline approved-versus-v6 landmarks
+        run: |
+          set -euo pipefail
+          mkdir -p output_rain_search_v7/QA/baseline output_rain_search_v7/QA/selected output_rain_search_v7/Preview candidates
+          python src/extract_aina_rain_identity_landmarks.py \
+            --approved-front references/AINA_APPROVED_FRONT.jpg \
+            --approved-q3 references/AINA_APPROVED_3Q.jpg \
+            --approved-side references/AINA_APPROVED_SIDE.jpg \
+            --model-front source_v6/source_front.png \
+            --model-q3 source_v6/source_three_quarter.png \
+            --model-side source_v6/source_side.png \
+            --front-target references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --out output_rain_search_v7/QA/baseline
+          test -s output_rain_search_v7/QA/baseline/AINA_RAIN_IDENTITY_LANDMARKS.json
+
+      - name: Install Blender 4.5.12 LTS and software rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Build three regularized residual candidates from the same v6 source
+        run: |
+          set -euo pipefail
+          for spec in 's30 0.30 0.0024' 's45 0.45 0.0027' 's60 0.60 0.0030'; do
+            set -- $spec
+            label="$1"; strength="$2"; cap="$3"
+            mkdir -p "candidates/$label/QA" "candidates/$label/Preview"
+            xvfb-run -a -s '-screen 0 1600x900x24' "$BLENDER" \
+              source_v6/candidate.blend \
+              --background --python-exit-code 1 \
+              --python src/blender/aina_rain_identity_search_candidate_v7.py -- \
+              --landmarks output_rain_search_v7/QA/baseline/AINA_RAIN_IDENTITY_LANDMARKS.json \
+              --source-report source_v6/source_report.json \
+              --strength "$strength" --cap "$cap" --label "$label" \
+              --out "candidates/$label" \
+              2>&1 | tee "candidates/$label/QA/AINA_RAIN_SEARCH_${label}_BUILD.log"
+            test -s "candidates/$label/AINA_RAIN_SEARCH_${label}.blend"
+            test -s "candidates/$label/QA/AINA_RAIN_SEARCH_${label}_REPORT.json"
+            test -s "candidates/$label/Preview/AINA_RAIN_SEARCH_FRONT.png"
+            test -s "candidates/$label/Preview/AINA_RAIN_SEARCH_THREE_QUARTER.png"
+            test -s "candidates/$label/Preview/AINA_RAIN_SEARCH_SIDE.png"
+          done
+
+      - name: Extract approved-versus-candidate landmarks
+        run: |
+          set -euo pipefail
+          for label in s30 s45 s60; do
+            mkdir -p "candidates/$label/Landmarks"
+            python src/extract_aina_rain_identity_landmarks.py \
+              --approved-front references/AINA_APPROVED_FRONT.jpg \
+              --approved-q3 references/AINA_APPROVED_3Q.jpg \
+              --approved-side references/AINA_APPROVED_SIDE.jpg \
+              --model-front "candidates/$label/Preview/AINA_RAIN_SEARCH_FRONT.png" \
+              --model-q3 "candidates/$label/Preview/AINA_RAIN_SEARCH_THREE_QUARTER.png" \
+              --model-side "candidates/$label/Preview/AINA_RAIN_SEARCH_SIDE.png" \
+              --front-target references/AINA_TARGET_3DDFA_SPARSE_68.json \
+              --out "candidates/$label/Landmarks"
+            test -s "candidates/$label/Landmarks/AINA_RAIN_IDENTITY_LANDMARKS.json"
+          done
+
+      - name: Score candidates and select the best regularized identity
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import shutil
+          from pathlib import Path
+          import numpy as np
+
+          def load(path): return json.loads(Path(path).read_text())
+          baseline_data = load('output_rain_search_v7/QA/baseline/AINA_RAIN_IDENTITY_LANDMARKS.json')
+
+          def pts(item):
+              for key in ('landmarks_xy', 'points', 'landmarks'):
+                  if key in item:
+                      p = np.asarray(item[key], dtype=np.float64)[:, :2]
+                      break
+              else: raise KeyError(list(item))
+              size = np.asarray(item.get('image_size', item.get('size', [1,1])), dtype=np.float64)
+              return p / np.maximum(size[None,:2], 1.0)
+
+          def proc(a,b):
+              a=a-a.mean(0); b=b-b.mean(0)
+              a/=max(float(np.linalg.norm(a)),1e-9); b/=max(float(np.linalg.norm(b)),1e-9)
+              u,_,vt=np.linalg.svd(a.T@b); r=u@vt
+              if np.linalg.det(r)<0: u[:,-1]*=-1; r=u@vt
+              return float(np.sqrt(np.mean(np.sum((a@r-b)**2,axis=1))))
+
+          def dist(a,i,j): return max(float(np.linalg.norm(a[i]-a[j])),1e-9)
+          def ratios(a):
+              face=dist(a,0,16)
+              eyes=np.array([a[36:42].mean(0),a[42:48].mean(0)])
+              eh=.25*(dist(a,37,41)+dist(a,38,40)+dist(a,43,47)+dist(a,44,46))
+              return {
+                'jaw':dist(a,4,12)/face,'chin':dist(a,6,10)/face,
+                'eye_width':.5*(dist(a,36,39)+dist(a,42,45))/face,
+                'eye_height':eh/face,'eye_spacing':dist(eyes,0,1)/face,
+                'nose':dist(a,31,35)/face,'mouth':dist(a,48,54)/face,
+                'lower':abs(float(a[8,1]-a[33,1]))/face,
+              }
+          approved={v:pts(baseline_data['approved'][v]) for v in ('front','three_quarter','side')}
+          def score_data(data, report=None):
+              rmse={v:proc(pts(data['model'][v]),approved[v]) for v in approved}
+              ar=ratios(approved['front']); mr=ratios(pts(data['model']['front']))
+              ratio_errors={k:abs(mr[k]/max(ar[k],1e-9)-1.0) for k in ar}
+              ratio_mae=float(np.mean(list(ratio_errors.values())))
+              regularization=0.0
+              if report:
+                  regularization=0.0016*float(report.get('candidate_residual_rms_m',0.0))/max(float(report.get('cap_m',1.0)),1e-9)
+              total=float(np.mean(list(rmse.values())))+0.10*ratio_mae+regularization
+              return {'score':total,'mean_rmse':float(np.mean(list(rmse.values()))),'rmse':rmse,'ratio_mae':ratio_mae,'ratio_errors':ratio_errors,'regularization':regularization}
+
+          candidates={}
+          candidates['baseline']={
+              'metrics':score_data(baseline_data),
+              'blend':'source_v6/candidate.blend',
+              'report':'source_v6/source_report.json',
+          }
+          for label in ('s30','s45','s60'):
+              data=load(f'candidates/{label}/Landmarks/AINA_RAIN_IDENTITY_LANDMARKS.json')
+              report=load(f'candidates/{label}/QA/AINA_RAIN_SEARCH_{label}_REPORT.json')
+              candidates[label]={
+                  'metrics':score_data(data,report),
+                  'blend':f'candidates/{label}/AINA_RAIN_SEARCH_{label}.blend',
+                  'report':f'candidates/{label}/QA/AINA_RAIN_SEARCH_{label}_REPORT.json',
+              }
+          baseline_score=candidates['baseline']['metrics']['score']
+          ordered=sorted(candidates.items(),key=lambda item:item[1]['metrics']['score'])
+          chosen_label,chosen=ordered[0]
+          if chosen_label!='baseline' and chosen['metrics']['score'] > baseline_score-0.00010:
+              chosen_label='baseline'; chosen=candidates['baseline']
+          selection={
+              'selected_label':chosen_label,
+              'selected_score':chosen['metrics']['score'],
+              'baseline_score':baseline_score,
+              'improvement':baseline_score-chosen['metrics']['score'],
+              'candidates':{label:value['metrics'] for label,value in candidates.items()},
+              'selected_blend':chosen['blend'],
+              'selected_report':chosen['report'],
+          }
+          out=Path('output_rain_search_v7/QA/AINA_RAIN_SEARCH_V7_SELECTION.json')
+          out.write_text(json.dumps(selection,indent=2))
+          selected=Path('selected'); selected.mkdir(exist_ok=True)
+          shutil.copy2(chosen['blend'],selected/'selected.blend')
+          shutil.copy2(chosen['report'],selected/'selected_report.json')
+          print(json.dumps(selection,indent=2))
+          PY
+          test -s output_rain_search_v7/QA/AINA_RAIN_SEARCH_V7_SELECTION.json
+          test -s selected/selected.blend
+          test -s selected/selected_report.json
+
+      - name: Render and export the objectively selected v7 identity
+        run: |
+          set +e
+          xvfb-run -a -s '-screen 0 1600x900x24' "$BLENDER" \
+            selected/selected.blend \
+            --background --python-exit-code 1 \
+            --python src/blender/aina_rain_identity_finalize_v7.py -- \
+            --selection output_rain_search_v7/QA/AINA_RAIN_SEARCH_V7_SELECTION.json \
+            --selected-report selected/selected_report.json \
+            --out output_rain_search_v7 \
+            2>&1 | tee output_rain_search_v7/QA/AINA_RAIN_IDENTITY_SELECTED_V7_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output_rain_search_v7/QA/AINA_RAIN_IDENTITY_SELECTED_V7_EXIT.txt
+          exit "$code"
+
+      - name: Extract final selected-v7 landmarks
+        run: |
+          set -euo pipefail
+          python src/extract_aina_rain_identity_landmarks.py \
+            --approved-front references/AINA_APPROVED_FRONT.jpg \
+            --approved-q3 references/AINA_APPROVED_3Q.jpg \
+            --approved-side references/AINA_APPROVED_SIDE.jpg \
+            --model-front output_rain_search_v7/Preview/AINA_RAIN_APPEARANCE_FRONT.png \
+            --model-q3 output_rain_search_v7/Preview/AINA_RAIN_APPEARANCE_THREE_QUARTER.png \
+            --model-side output_rain_search_v7/Preview/AINA_RAIN_APPEARANCE_SIDE.png \
+            --front-target references/AINA_TARGET_3DDFA_SPARSE_68.json \
+            --out output_rain_search_v7/QA/selected
+          test -s output_rain_search_v7/QA/selected/AINA_RAIN_IDENTITY_LANDMARKS.json
+
+      - name: Build actual selected-v7 comparison, expression and clay sheets
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw
+          root=Path('output_rain_search_v7'); preview=root/'Preview'; qa=root/'QA'
+          pairs=[
+            ('references/AINA_APPROVED_FRONT.jpg',preview/'AINA_RAIN_APPEARANCE_FRONT.png','FRONT'),
+            ('references/AINA_APPROVED_3Q.jpg',preview/'AINA_RAIN_APPEARANCE_THREE_QUARTER.png','3Q'),
+            ('references/AINA_APPROVED_SIDE.jpg',preview/'AINA_RAIN_APPEARANCE_SIDE.png','SIDE'),
+          ]
+          panels=[]
+          for ref_path,model_path,label in pairs:
+              ref=Image.open(ref_path).convert('RGB'); model=Image.open(model_path).convert('RGB')
+              ref.thumbnail((430,430)); model.thumbnail((430,430))
+              panel=Image.new('RGB',(900,485),'white')
+              panel.paste(ref,((440-ref.width)//2,5)); panel.paste(model,(455+(440-model.width)//2,5))
+              draw=ImageDraw.Draw(panel); draw.text((10,455),f'APPROVED AINA {label}',fill='black'); draw.text((465,455),f'SELECTED REAL RAIN V7 {label}',fill='black')
+              panels.append(panel)
+          sheet=Image.new('RGB',(900,1455),'white')
+          for i,panel in enumerate(panels): sheet.paste(panel,(0,i*485))
+          sheet.save(qa/'AINA_APPROVED_VS_RAIN_SELECTED_V7.png')
+
+          compare=Image.new('RGB',(1080,570),'white')
+          for i,(path,label) in enumerate((('source_v6/source_front.png','CONVERGENCE V6'),(preview/'AINA_RAIN_APPEARANCE_FRONT.png','SELECTED V7'))):
+              image=Image.open(path).convert('RGB'); image.thumbnail((520,520))
+              compare.paste(image,(i*540+(540-image.width)//2,5)); ImageDraw.Draw(compare).text((i*540+10,540),label,fill='black')
+          compare.save(qa/'AINA_RAIN_V6_VS_SELECTED_V7_FRONT.png')
+
+          expressions=Image.new('RGB',(840,880),'white')
+          for i,name in enumerate(('FRONT','HAPPY','SAD','BLINK')):
+              image=Image.open(preview/f'AINA_RAIN_APPEARANCE_{name}.png').convert('RGB'); image.thumbnail((400,400))
+              panel=Image.new('RGB',(420,440),'white'); panel.paste(image,((420-image.width)//2,5)); ImageDraw.Draw(panel).text((10,415),name,fill='black')
+              expressions.paste(panel,((i%2)*420,(i//2)*440))
+          expressions.save(qa/'AINA_RAIN_SELECTED_V7_EXPRESSIONS.png')
+
+          clay=Image.new('RGB',(1290,450),'white')
+          for i,name in enumerate(('CLAY_FRONT','CLAY_THREE_QUARTER','CLAY_SIDE')):
+              image=Image.open(preview/f'AINA_RAIN_APPEARANCE_{name}.png').convert('RGB'); image.thumbnail((410,410))
+              panel=Image.new('RGB',(430,450),'white'); panel.paste(image,((430-image.width)//2,5)); ImageDraw.Draw(panel).text((10,425),name,fill='black')
+              clay.paste(panel,(i*430,0))
+          clay.save(qa/'AINA_RAIN_SELECTED_V7_CLAY.png')
+          PY
+          test -s output_rain_search_v7/QA/AINA_APPROVED_VS_RAIN_SELECTED_V7.png
+          test -s output_rain_search_v7/QA/AINA_RAIN_V6_VS_SELECTED_V7_FRONT.png
+          test -s output_rain_search_v7/QA/AINA_RAIN_SELECTED_V7_EXPRESSIONS.png
+          test -s output_rain_search_v7/QA/AINA_RAIN_SELECTED_V7_CLAY.png
+
+      - name: Enforce selection, topology and expression-preservation gates
+        run: |
+          set -euo pipefail
+          test -s output_rain_search_v7/AINA_RAIN_IDENTITY_SELECTED_V7.blend
+          test -s output_rain_search_v7/AINA_RAIN_IDENTITY_SELECTED_V7.glb
+          test -s output_rain_search_v7/QA/AINA_RAIN_IDENTITY_SELECTED_V7_REPORT.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          selection=json.loads(Path('output_rain_search_v7/QA/AINA_RAIN_SEARCH_V7_SELECTION.json').read_text())
+          report=json.loads(Path('output_rain_search_v7/QA/AINA_RAIN_IDENTITY_SELECTED_V7_REPORT.json').read_text())
+          assert selection['selected_score'] <= selection['baseline_score'] + 1e-9
+          assert report['real_3d_model'] is True
+          assert report['replacement_effect_art_generated'] is False
+          assert report['skin_topology_changed'] is False
+          assert report['armature_preserved'] is True
+          assert report['skin_weights_preserved'] is True
+          assert report['uvs_preserved'] is True
+          assert report['vertices'] == 6868
+          assert report['triangles'] == 12634
+          assert report['source_shape_key_count'] >= 23
+          preservation=report['shape_key_preservation']
+          assert preservation['shape_key_count'] >= 23
+          assert preservation['shape_delta_preservation_max_m'] < 1e-5
+          assert preservation['shape_delta_preservation_rms_m'] < 1e-6
+          assert report['identity_lock'] is False
+          assert report['visual_identity_lock'] is False
+          assert report['production_release'] is False
+          assert report['candidate'] is True
+          assert report['vrm_exported'] is False
+          print(json.dumps({'selected':selection['selected_label'],'baseline_score':selection['baseline_score'],'selected_score':selection['selected_score'],'improvement':selection['improvement'],'vertices':report['vertices'],'triangles':report['triangles'],'shape_keys':preservation['shape_key_count']},indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-RAIN-IDENTITY-SELECTED-V7
+          path: |
+            output_rain_search_v7/**
+            source_v6/artifact_id.txt
+          if-no-files-found: error
+          retention-days: 30
