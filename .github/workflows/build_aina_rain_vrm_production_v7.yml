@@ -1,0 +1,355 @@
+name: Build AINA Rain VRM Production v7
+
+on:
+  pull_request:
+    branches: [ci/aina-rain-vrm-v7-base]
+    paths:
+      - RUN_AINA_RAIN_VRM_PRODUCTION_V7
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-rain-vrm-production-v7
+  cancel-in-progress: true
+
+jobs:
+  production_v7:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 125
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+      MPLBACKEND: Agg
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install artifact and image dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install requests pillow
+
+      - name: Materialize approved AINA references
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+          test -s references/AINA_APPROVED_FRONT.jpg
+          test -s references/AINA_APPROVED_3Q.jpg
+          test -s references/AINA_APPROVED_SIDE.jpg
+
+      - name: Wait for and download successful Rain residual v6 source
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import io
+          import os
+          import shutil
+          import time
+          import zipfile
+          from pathlib import Path
+          import requests
+
+          repository = os.environ['GITHUB_REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+          }
+          name = 'AINA-RAIN-IDENTITY-RESIDUAL-V6'
+          artifact = None
+          for attempt in range(80):
+              url = f'https://api.github.com/repos/{repository}/actions/artifacts?name={name}&per_page=100'
+              response = requests.get(url, headers=headers, timeout=45)
+              response.raise_for_status()
+              artifacts = [item for item in response.json().get('artifacts', []) if not item.get('expired')]
+              if artifacts:
+                  artifact = max(artifacts, key=lambda item: item['id'])
+                  break
+              print(f'Waiting for {name}: attempt {attempt + 1}/80', flush=True)
+              time.sleep(30)
+          if artifact is None:
+              raise SystemExit(f'No unexpired {name} artifact became available')
+
+          archive = requests.get(
+              artifact['archive_download_url'],
+              headers=headers,
+              timeout=300,
+              allow_redirects=True,
+          )
+          archive.raise_for_status()
+          root = Path('source_v6_artifact')
+          if root.exists():
+              shutil.rmtree(root)
+          root.mkdir()
+          with zipfile.ZipFile(io.BytesIO(archive.content)) as zf:
+              zf.extractall(root)
+
+          def find(name):
+              matches = list(root.rglob(name))
+              if not matches:
+                  raise FileNotFoundError(name)
+              return matches[0]
+
+          stable = Path('source_v6')
+          stable.mkdir(exist_ok=True)
+          files = {
+              'AINA_RAIN_IDENTITY_RESIDUAL_V6.blend': 'candidate.blend',
+              'AINA_RAIN_IDENTITY_RESIDUAL_V6_REPORT.json': 'source_report.json',
+              'AINA_RAIN_APPEARANCE_FRONT.png': 'source_front.png',
+              'AINA_RAIN_APPEARANCE_THREE_QUARTER.png': 'source_three_quarter.png',
+              'AINA_RAIN_APPEARANCE_SIDE.png': 'source_side.png',
+          }
+          for source_name, destination_name in files.items():
+              shutil.copy2(find(source_name), stable / destination_name)
+          (stable / 'artifact_id.txt').write_text(str(artifact['id']), encoding='utf-8')
+          print({'artifact_id': artifact['id'], 'size': artifact['size_in_bytes']})
+          PY
+          test -s source_v6/candidate.blend
+          test -s source_v6/source_report.json
+          test -s source_v6/source_front.png
+          test -s source_v6/source_three_quarter.png
+          test -s source_v6/source_side.png
+
+      - name: Install Blender 4.5.12 LTS and software rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Build real AINA MASTER and VRM 1.0 technical candidate
+        run: |
+          set +e
+          mkdir -p output_rain_vrm_v7/QA output_rain_vrm_v7/Preview
+          xvfb-run -a -s '-screen 0 1600x900x24' "$BLENDER" \
+            source_v6/candidate.blend \
+            --background --python-exit-code 1 \
+            --python src/blender/aina_rain_vrm_production_v7.py -- \
+            --source-report source_v6/source_report.json \
+            --out output_rain_vrm_v7 \
+            2>&1 | tee output_rain_vrm_v7/QA/AINA_RAIN_VRM_PRODUCTION_V7_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output_rain_vrm_v7/QA/AINA_RAIN_VRM_PRODUCTION_V7_EXIT.txt
+          exit "$code"
+
+      - name: Enforce VRM binary structure before reimport
+        run: |
+          set -euo pipefail
+          test -s output_rain_vrm_v7/AINA_MASTER.blend
+          test -s output_rain_vrm_v7/AINA.vrm
+          test -s output_rain_vrm_v7/QA/AINA_RAIN_VRM_PRODUCTION_V7_REPORT.json
+          test -s output_rain_vrm_v7/QA/AINA_VRM_BINARY_QA.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('output_rain_vrm_v7/QA/AINA_RAIN_VRM_PRODUCTION_V7_REPORT.json').read_text())
+          qa = report['binary_qa']
+          assert report['real_3d_model'] is True
+          assert report['replacement_effect_art_generated'] is False
+          assert report['skin_topology_changed'] is False
+          assert report['vertices'] == report['source_vertices'] == 6868
+          assert report['triangles'] == report['source_triangles'] == 12634
+          assert report['shape_controls'] == 52
+          assert report['preset_expressions'] == 18
+          assert report['arkit']['present'] == 52
+          assert report['arkit']['nonzero'] == 52
+          assert qa['arkit_targets_present'] == 52
+          assert qa['arkit_targets_nonzero'] == 52
+          assert qa['preset_count'] == 18
+          assert set(qa['preset_counts']) == {
+              'happy','angry','sad','relaxed','surprised','aa','ih','ou','ee','oh',
+              'blink','blinkLeft','blinkRight','lookUp','lookDown','lookLeft','lookRight','neutral'
+          }
+          assert qa['preset_counts']['neutral'] == 0
+          assert all(count > 0 for name, count in qa['preset_counts'].items() if name != 'neutral')
+          assert not qa['required_humanoid_missing']
+          assert len(qa['humanoid_bones']) >= 17
+          assert len(qa['hair_nodes']) >= 1
+          assert 'VRMC_vrm' in qa['extensions_used']
+          assert 'VRMC_springBone' in qa['extensions_used']
+          assert report['vrm_spec'] == '1.0'
+          assert report['identity_lock'] is False
+          assert report['visual_identity_lock'] is False
+          assert report['production_release'] is False
+          assert report['candidate'] is True
+          assert report['vrm_exported'] is True
+          print(json.dumps({
+              'arkit': qa['arkit_targets_present'],
+              'nonzero': qa['arkit_targets_nonzero'],
+              'presets': qa['preset_count'],
+              'humanoid': len(qa['humanoid_bones']),
+              'spring_nodes': len(qa['hair_nodes']),
+              'extensions': qa['extensions_used'],
+          }, indent=2))
+          PY
+
+      - name: Preserve exact VRM bytes for stock Blender clean reimport
+        run: |
+          set -euo pipefail
+          cp output_rain_vrm_v7/AINA.vrm output_rain_vrm_v7/AINA_EXACT_REIMPORT.glb
+          cmp output_rain_vrm_v7/AINA.vrm output_rain_vrm_v7/AINA_EXACT_REIMPORT.glb
+          sha256sum output_rain_vrm_v7/AINA.vrm > output_rain_vrm_v7/QA/AINA_VRM_SHA256.txt
+          sha256sum output_rain_vrm_v7/AINA_MASTER.blend >> output_rain_vrm_v7/QA/AINA_VRM_SHA256.txt
+
+      - name: Clean-import exact AINA VRM bytes and render verification views
+        run: |
+          set +e
+          mkdir -p output_rain_vrm_v7/Reimport/QA output_rain_vrm_v7/Reimport/Preview
+          xvfb-run -a -s '-screen 0 1600x900x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_rain_vrm_reimport_v7.py -- \
+            --source output_rain_vrm_v7/AINA_EXACT_REIMPORT.glb \
+            --production-report output_rain_vrm_v7/QA/AINA_RAIN_VRM_PRODUCTION_V7_REPORT.json \
+            --out output_rain_vrm_v7/Reimport \
+            2>&1 | tee output_rain_vrm_v7/Reimport/QA/AINA_VRM_REIMPORT_V7_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output_rain_vrm_v7/Reimport/QA/AINA_VRM_REIMPORT_V7_EXIT.txt
+          exit "$code"
+
+      - name: Build final actual-model and reimport review sheets
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw
+
+          root = Path('output_rain_vrm_v7')
+          preview = root / 'Preview'
+          reimport = root / 'Reimport/Preview'
+          qa = root / 'QA'
+
+          pairs = [
+              ('references/AINA_APPROVED_FRONT.jpg', preview / 'AINA_RAIN_APPEARANCE_FRONT.png', 'FRONT'),
+              ('references/AINA_APPROVED_3Q.jpg', preview / 'AINA_RAIN_APPEARANCE_THREE_QUARTER.png', '3Q'),
+              ('references/AINA_APPROVED_SIDE.jpg', preview / 'AINA_RAIN_APPEARANCE_SIDE.png', 'SIDE'),
+          ]
+          panels = []
+          for ref_path, model_path, label in pairs:
+              ref = Image.open(ref_path).convert('RGB')
+              model = Image.open(model_path).convert('RGB')
+              ref.thumbnail((430,430)); model.thumbnail((430,430))
+              panel = Image.new('RGB',(900,485),'white')
+              panel.paste(ref,((440-ref.width)//2,5))
+              panel.paste(model,(455+(440-model.width)//2,5))
+              draw = ImageDraw.Draw(panel)
+              draw.text((10,455),f'APPROVED AINA {label}',fill='black')
+              draw.text((465,455),f'AINA VRM V7 REAL MODEL {label}',fill='black')
+              panels.append(panel)
+          sheet = Image.new('RGB',(900,485*len(panels)),'white')
+          for index,panel in enumerate(panels): sheet.paste(panel,(0,index*485))
+          sheet.save(qa/'AINA_APPROVED_VS_VRM_V7_REAL_MODEL.png')
+
+          expression_names = ['HAPPY','ANGRY','SAD','SURPRISED','BLINK','AA','OU']
+          expression_panels = []
+          for name in expression_names:
+              image = Image.open(reimport/f'AINA_VRM_REIMPORT_{name}.png').convert('RGB')
+              image.thumbnail((360,360))
+              panel = Image.new('RGB',(380,400),'white')
+              panel.paste(image,((380-image.width)//2,5))
+              ImageDraw.Draw(panel).text((10,375),name,fill='black')
+              expression_panels.append(panel)
+          expression_sheet = Image.new('RGB',(380*4,400*2),'white')
+          for index,panel in enumerate(expression_panels):
+              expression_sheet.paste(panel,((index%4)*380,(index//4)*400))
+          expression_sheet.save(qa/'AINA_VRM_V7_REIMPORT_EXPRESSIONS.png')
+
+          neutral_names = ['FRONT','THREE_QUARTER','SIDE']
+          neutral_panels = []
+          for name in neutral_names:
+              image = Image.open(reimport/f'AINA_VRM_REIMPORT_NEUTRAL_{name}.png').convert('RGB')
+              image.thumbnail((410,410))
+              panel = Image.new('RGB',(430,450),'white')
+              panel.paste(image,((430-image.width)//2,5))
+              ImageDraw.Draw(panel).text((10,425),f'REIMPORT {name}',fill='black')
+              neutral_panels.append(panel)
+          neutral_sheet = Image.new('RGB',(1290,450),'white')
+          for index,panel in enumerate(neutral_panels): neutral_sheet.paste(panel,(index*430,0))
+          neutral_sheet.save(qa/'AINA_VRM_V7_REIMPORT_NEUTRAL_3VIEW.png')
+          PY
+          test -s output_rain_vrm_v7/QA/AINA_APPROVED_VS_VRM_V7_REAL_MODEL.png
+          test -s output_rain_vrm_v7/QA/AINA_VRM_V7_REIMPORT_EXPRESSIONS.png
+          test -s output_rain_vrm_v7/QA/AINA_VRM_V7_REIMPORT_NEUTRAL_3VIEW.png
+
+      - name: Enforce final technical candidate gate
+        run: |
+          set -euo pipefail
+          test -s output_rain_vrm_v7/Reimport/QA/AINA_VRM_REIMPORT_V7_QA.json
+          test -s output_rain_vrm_v7/Reimport/AINA_VRM_REIMPORT_VERIFIED.blend
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          production_path = Path('output_rain_vrm_v7/QA/AINA_RAIN_VRM_PRODUCTION_V7_REPORT.json')
+          reimport_path = Path('output_rain_vrm_v7/Reimport/QA/AINA_VRM_REIMPORT_V7_QA.json')
+          production = json.loads(production_path.read_text())
+          reimport = json.loads(reimport_path.read_text())
+          assert reimport['pass'] is True
+          assert reimport['stage'] == 'reimport_passed'
+          assert reimport['arkit_present'] == 52
+          assert reimport['arkit_nonzero'] == 52
+          assert reimport['preset_present'] == 18
+          assert reimport['preset_gate'] is True
+          assert reimport['humanoid_bone_mappings'] >= 17
+          assert reimport['spring_hair_nodes'] >= 1
+          assert reimport['technical_release_gate'] is True
+          final = {
+              'product': 'AINA Rain VRM Production v7 Technical Candidate',
+              'real_3d_model': True,
+              'replacement_effect_art_generated': False,
+              'vrm_spec': '1.0',
+              'shape_controls': 52,
+              'shape_controls_nonzero': 52,
+              'preset_expressions': 18,
+              'humanoid': True,
+              'look_at': True,
+              'spring_bone': True,
+              'exact_byte_reimport': True,
+              'technical_release_gate': True,
+              'identity_lock': False,
+              'visual_identity_lock': False,
+              'production_release': False,
+              'candidate': True,
+              'decision': 'TECHNICAL_CANDIDATE_REIMPORT_PASSED_VISUAL_LOCK_PENDING',
+              'production_report': str(production_path),
+              'reimport_report': str(reimport_path),
+              'files': {
+                  'vrm': 'output_rain_vrm_v7/AINA.vrm',
+                  'blend': 'output_rain_vrm_v7/AINA_MASTER.blend',
+                  'reimport_blend': 'output_rain_vrm_v7/Reimport/AINA_VRM_REIMPORT_VERIFIED.blend',
+              },
+          }
+          Path('output_rain_vrm_v7/QA/AINA_VRM_V7_FINAL_TECHNICAL_REPORT.json').write_text(
+              json.dumps(final, indent=2), encoding='utf-8'
+          )
+          print(json.dumps(final, indent=2))
+          PY
+          test -s output_rain_vrm_v7/QA/AINA_VRM_V7_FINAL_TECHNICAL_REPORT.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-RAIN-VRM-PRODUCTION-V7
+          path: |
+            output_rain_vrm_v7/**
+            source_v6/artifact_id.txt
+          if-no-files-found: error
+          retention-days: 30
