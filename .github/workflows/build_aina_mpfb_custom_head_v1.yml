@@ -51,6 +51,7 @@ jobs:
           set -euo pipefail
           git clone --depth 1 https://github.com/makehumancommunity/mpfb2.git external/mpfb2
           test -s external/mpfb2/src/mpfb/__init__.py
+          test -s external/mpfb2/src/mpfb/blender_manifest.toml
           test -s external/mpfb2/LICENSE.ASSETS.md
           grep -qi 'CC0' external/mpfb2/LICENSE.ASSETS.md
 
@@ -70,13 +71,32 @@ jobs:
           tar -xf blender.tar.xz -C blender --strip-components=1
           echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
 
+      - name: Package, validate and enable MPFB2 extension
+        run: |
+          set -euo pipefail
+          mkdir -p extension_dist
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZIP_DEFLATED, ZipFile
+          source = Path('external/mpfb2/src/mpfb')
+          target = Path('extension_dist/mpfb-2.0.17.zip')
+          with ZipFile(target, 'w', ZIP_DEFLATED) as archive:
+              for path in source.rglob('*'):
+                  if path.is_file() and '__pycache__' not in path.parts:
+                      archive.write(path, path.relative_to(source))
+          print(target, target.stat().st_size)
+          PY
+          test -s extension_dist/mpfb-2.0.17.zip
+          "$BLENDER" --command extension validate extension_dist/mpfb-2.0.17.zip
+          "$BLENDER" --command extension install-file -r user_default -e extension_dist/mpfb-2.0.17.zip
+
       - name: Build new adult-topology AINA model
         run: |
           set +e
           mkdir -p output_mpfb_head_v1/QA output_mpfb_head_v1/Preview
           xvfb-run -a -s '-screen 0 1600x900x24' "$BLENDER" \
-            --background --factory-startup --python-exit-code 1 \
-            --python src/blender/aina_mpfb_custom_head_v1.py -- \
+            --background --python-exit-code 1 \
+            --python src/blender/aina_mpfb_custom_head_v1_runtime.py -- \
             --mpfb-root external/mpfb2 \
             --out output_mpfb_head_v1 \
             2>&1 | tee output_mpfb_head_v1/QA/AINA_MPFB_CUSTOM_HEAD_V1_BUILD.log
