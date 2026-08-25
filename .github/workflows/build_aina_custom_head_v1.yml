@@ -97,7 +97,7 @@ jobs:
       - name: Build the new custom adult identity head without the Rain face
         run: |
           set -euo pipefail
-          python src/fuse_aina_custom_head_v1.py \
+          python src/fuse_aina_custom_head_v1_fixed.py \
             2>&1 | tee output_custom_head_v1_build.log
           test -s output_custom_head_v1/AINA_CUSTOM_HEAD_FULL_v1.obj
           test -s output_custom_head_v1/AINA_CUSTOM_HEAD_FULL_v1.glb
