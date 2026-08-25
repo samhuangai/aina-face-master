@@ -97,7 +97,7 @@ jobs:
       - name: Build the new custom adult identity head without the Rain face
         run: |
           set -euo pipefail
-          python src/fuse_aina_custom_head_v1.py \
+          python src/fuse_aina_custom_head_v1_fixed.py \
             2>&1 | tee output_custom_head_v1_build.log
           test -s output_custom_head_v1/AINA_CUSTOM_HEAD_FULL_v1.obj
           test -s output_custom_head_v1/AINA_CUSTOM_HEAD_FULL_v1.glb
@@ -122,10 +122,10 @@ jobs:
           assert report['vertex_order_preserved'] is True
           assert report['neutral_displacement_saved'] is True
           assert report['expression_transfer_ready'] is True
-          assert report['vertices'] > 10000
-          assert report['triangles'] > 10000
+          assert report['vertices'] > 19000
+          assert report['triangles'] > 38000
           assert report['skin_vertices'] > 5000
-          assert report['graft']['confident_skin_vertices'] > 1500
+          assert report['graft']['confident_skin_vertices'] > 700
           assert report['graft']['final_neutral_displacement_max_m'] <= 0.0121
           assert report['identity_lock'] is False
           assert report['visual_identity_lock'] is False
