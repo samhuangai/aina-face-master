@@ -1,1 +1,1 @@
-2026-08-25 rerun the custom AINA head after padding FaceVerse neutral pose, lighting, translation and eye coefficient slots
+2026-08-25 rerun custom AINA head through the fixed FaceVerse all_dims plus 37 coefficient wrapper
