@@ -1,0 +1,156 @@
+name: Build AINA Custom Identity Head v1
+
+on:
+  pull_request:
+    branches: [ci/aina-custom-head-v1-base]
+    paths:
+      - RUN_AINA_CUSTOM_HEAD_V1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aina-custom-head-v1
+  cancel-in-progress: true
+
+jobs:
+  custom_head:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install reconstruction and graft dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip setuptools wheel
+          pip install numpy==1.26.4 scipy opencv-python-headless pyyaml cython \
+            scikit-image tqdm matplotlib trimesh pillow onnxruntime requests
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Materialize the already-approved AINA references
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+          test -s references/AINA_APPROVED_FRONT.jpg
+          test -s references/AINA_APPROVED_3Q.jpg
+          test -s references/AINA_APPROVED_SIDE.jpg
+          test -s references/AINA_TARGET_3DDFA_SPARSE_68.json
+
+      - name: Fetch and build 3DDFA V2 dense target reconstruction
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/cleardusk/3DDFA_V2.git vendor/3DDFA_V2
+          git -C vendor/3DDFA_V2 lfs install --local || true
+          git -C vendor/3DDFA_V2 lfs pull || true
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('vendor/3DDFA_V2')
+          for glob in ('*.py','*.pyx','*.pxd'):
+              for path in root.rglob(glob):
+                  try:
+                      text=path.read_text()
+                  except Exception:
+                      continue
+                  original=text
+                  for source,target in (
+                      (r'\bnp\.long\b','np.int64'),
+                      (r'\bnp\.int\b','np.int64'),
+                      (r'\bnp\.float\b','float'),
+                      (r'\bnp\.bool\b','bool'),
+                  ):
+                      text=re.sub(source,target,text)
+                  if text != original:
+                      path.write_text(text)
+          PY
+          cd vendor/3DDFA_V2
+          sh ./build.sh
+          cd ../..
+          python src/reconstruct_aina_dense_3ddfa.py
+          test -s output_dense_3ddfa/AINA_DENSE_BFM_NEUTRAL_v11.0.obj
+          test -s output_dense_3ddfa/AINA_DENSE_v11.0_REPORT.json
+
+      - name: Fetch and run FaceVerse V4 expression-capable reconstruction
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/Mrkomiljon/faceverse-onnx.git vendor/faceverse-onnx
+          cd vendor/faceverse-onnx
+          python download_models.py --models faceverse_v4_2.npy faceverse_resnet50_float32.onnx
+          test -s data/faceverse_v4_2.npy
+          test -s data/faceverse_resnet50_float32.onnx
+          cd ../..
+          python src/reconstruct_aina_faceverse_v120.py
+          test -s output_faceverse_v120/AINA_FACEVERSE_IDENTITY_156_v12.0.npy
+          test -s output_faceverse_v120/AINA_FACEVERSE_FULL_v12.0.obj
+          test -s output_faceverse_v120/AINA_FACEVERSE_v12.0_REPORT.json
+
+      - name: Build the new custom adult identity head without the Rain face
+        run: |
+          set -euo pipefail
+          python src/fuse_aina_custom_head_v1.py \
+            2>&1 | tee output_custom_head_v1_build.log
+          test -s output_custom_head_v1/AINA_CUSTOM_HEAD_FULL_v1.obj
+          test -s output_custom_head_v1/AINA_CUSTOM_HEAD_FULL_v1.glb
+          test -s output_custom_head_v1/AINA_CUSTOM_HEAD_TRANSFER_v1.npz
+          test -s output_custom_head_v1/AINA_CUSTOM_HEAD_v1_REPORT.json
+          test -s output_custom_head_v1/QA/AINA_APPROVED_VS_CUSTOM_HEAD_v1.png
+          test -s output_custom_head_v1/QA/AINA_CUSTOM_HEAD_5VIEW_v1.png
+
+      - name: Enforce the direction reset and topology gates
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path('output_custom_head_v1/AINA_CUSTOM_HEAD_v1_REPORT.json').read_text())
+          assert report['direction_pivot'] is True
+          assert report['primary_face_direction'] == 'CUSTOM_FACEVERSE_DENSE_GRAFT'
+          assert report['rain_face_used'] is False
+          assert report['rain_body_or_rig_used'] is False
+          assert report['replacement_effect_art_generated'] is False
+          assert report['topology_changed'] is False
+          assert report['vertex_order_preserved'] is True
+          assert report['neutral_displacement_saved'] is True
+          assert report['expression_transfer_ready'] is True
+          assert report['vertices'] > 10000
+          assert report['triangles'] > 10000
+          assert report['skin_vertices'] > 5000
+          assert report['graft']['confident_skin_vertices'] > 1500
+          assert report['graft']['final_neutral_displacement_max_m'] <= 0.0121
+          assert report['identity_lock'] is False
+          assert report['visual_identity_lock'] is False
+          assert report['production_release'] is False
+          assert report['candidate'] is True
+          assert report['vrm_exported'] is False
+          print(json.dumps({
+              'vertices': report['vertices'],
+              'triangles': report['triangles'],
+              'skin_vertices': report['skin_vertices'],
+              'icp_rmse_m': report['alignment']['trimmed_icp_rmse_m'],
+              'confident_skin_vertices': report['graft']['confident_skin_vertices'],
+              'target_rmse_m': report['graft']['final_target_rmse_m'],
+              'max_displacement_m': report['graft']['final_neutral_displacement_max_m'],
+          }, indent=2))
+          PY
+
+      - name: Upload the custom-head model and actual clay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-CUSTOM-IDENTITY-HEAD-V1
+          path: |
+            output_custom_head_v1/**
+            output_custom_head_v1_build.log
+            AINA_DIRECTION_RESET_CUSTOM_HEAD.md
+          if-no-files-found: error
+          retention-days: 30
