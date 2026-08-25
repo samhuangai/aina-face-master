@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Corrected entry point for AINA Custom Head v1.
 
-Two public FaceVerse compatibility details are handled here without changing the
-core graft algorithm:
+This wrapper fixes two public FaceVerse integration details while keeping the
+core custom-head graft unchanged:
 
-1. FaceVerseModel_torch.all_dims excludes the 37 lighting, rotation,
-   translation and eye slots required by run(), so neutral inputs are padded.
-2. The FaceVerse parsing['skin'] field is not a complete production-head mask
-   for this release. The actual facial/head skin is the largest connected
-   component of the 19,546-vertex topology, so it is recovered directly from
-   mesh connectivity instead of using the incomplete parsing strip.
+1. ``FaceVerseModel_torch.all_dims`` covers identity, expression and texture,
+   but ``run()`` additionally reads 27 lighting, 3 rotation, 3 translation and
+   4 eye coefficients. Neutral inputs are therefore padded to ``all_dims+37``.
+2. The release's ``parsing['skin']`` mask is only a narrow auxiliary strip and
+   is not the complete renderable head. Before the graft reads it, the mask is
+   replaced by the union of FaceVerse's explicit front-face mask and its scalp
+   skin mask. If that union is unexpectedly small, the largest connected mesh
+   component is included as a safe outer-surface fallback.
 """
 from __future__ import annotations
 
@@ -20,7 +22,60 @@ from scipy.sparse.csgraph import connected_components
 
 import fuse_aina_custom_head_v1 as pipeline
 
+_ORIGINAL_INIT = pipeline.FaceVerseModel_torch.__init__
 _ORIGINAL_RUN = pipeline.FaceVerseModel_torch.run
+
+
+def _largest_component_mask(vertex_count: int, faces: np.ndarray) -> np.ndarray:
+    edges = np.concatenate(
+        [faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]],
+        axis=0,
+    )
+    rows = np.concatenate([edges[:, 0], edges[:, 1]])
+    cols = np.concatenate([edges[:, 1], edges[:, 0]])
+    graph = coo_matrix(
+        (np.ones(len(rows), dtype=np.uint8), (rows, cols)),
+        shape=(vertex_count, vertex_count),
+    ).tocsr()
+    component_count, labels = connected_components(graph, directed=False)
+    counts = np.bincount(labels, minlength=component_count)
+    return labels == int(np.argmax(counts))
+
+
+def _init_with_complete_surface(self, *args, **kwargs):
+    _ORIGINAL_INIT(self, *args, **kwargs)
+    vertex_count = int(self.meanshape.shape[1])
+    faces = np.asarray(self.tri.cpu(), dtype=np.int64)
+    if faces.min() == 1:
+        faces = faces - 1
+
+    parsing_skin = np.asarray(self.fvd["parsing"]["skin"]).reshape(-1) > 0
+    front_face = np.asarray(self.fvd["face_mask"]).reshape(-1) > 0
+    if len(parsing_skin) != vertex_count or len(front_face) != vertex_count:
+        raise RuntimeError(
+            f"FaceVerse mask length mismatch: skin={len(parsing_skin)}, "
+            f"front={len(front_face)}, vertices={vertex_count}"
+        )
+
+    complete_surface = parsing_skin | front_face
+    if int(complete_surface.sum()) < 5000:
+        complete_surface |= _largest_component_mask(vertex_count, faces)
+    if int(complete_surface.sum()) < 5000:
+        raise RuntimeError(
+            f"Recovered FaceVerse outer surface is unexpectedly small: "
+            f"{int(complete_surface.sum())}"
+        )
+
+    self.fvd["parsing"]["skin"] = complete_surface.astype(np.uint8)
+    print(
+        {
+            "faceverse_surface_mask": {
+                "parsing_skin_vertices": int(parsing_skin.sum()),
+                "front_face_vertices": int(front_face.sum()),
+                "complete_surface_vertices": int(complete_surface.sum()),
+            }
+        }
+    )
 
 
 def _run_with_complete_coefficients(self, coeffs, only_lms=False, use_color=False, use_lighting=False):
@@ -45,72 +100,8 @@ def _run_with_complete_coefficients(self, coeffs, only_lms=False, use_color=Fals
     )
 
 
-def _largest_component_mask(vertex_count: int, faces: np.ndarray) -> tuple[np.ndarray, dict]:
-    edges = np.concatenate(
-        [
-            faces[:, [0, 1]],
-            faces[:, [1, 2]],
-            faces[:, [2, 0]],
-        ],
-        axis=0,
-    )
-    rows = np.concatenate([edges[:, 0], edges[:, 1]])
-    cols = np.concatenate([edges[:, 1], edges[:, 0]])
-    graph = coo_matrix(
-        (np.ones(len(rows), dtype=np.uint8), (rows, cols)),
-        shape=(vertex_count, vertex_count),
-    ).tocsr()
-    component_count, labels = connected_components(graph, directed=False)
-    counts = np.bincount(labels, minlength=component_count)
-    label = int(np.argmax(counts))
-    mask = labels == label
-    return mask, {
-        "component_count": int(component_count),
-        "largest_component_label": label,
-        "largest_component_vertices": int(mask.sum()),
-        "component_sizes_desc": [int(value) for value in sorted(counts.tolist(), reverse=True)],
-    }
-
-
-def _load_faceverse_complete_head():
-    identity_path = (
-        pipeline.ROOT
-        / "output_faceverse_v120"
-        / "AINA_FACEVERSE_IDENTITY_156_v12.0.npy"
-    )
-    identity = np.load(identity_path).astype(np.float32)
-    model = pipeline.FaceVerseModel_torch(
-        device=torch.device("cpu"),
-        facevrsepath=str(pipeline.FVROOT / "data/faceverse_v4_2.npy"),
-        camera_distance=10,
-        focal=1000,
-        center=128,
-    )
-    neutral = np.zeros((int(model.all_dims),), dtype=np.float32)
-    neutral[: int(model.id_dims)] = identity[: int(model.id_dims)]
-    with torch.no_grad():
-        result = model.run(
-            torch.from_numpy(neutral[None]).float(),
-            only_lms=False,
-            use_color=False,
-        )
-    raw = np.asarray(result["vertices"][0].cpu(), dtype=np.float64)
-    vertices, scale, centre = pipeline.normalize_metric(raw)
-    faces = np.asarray(model.tri.cpu(), dtype=np.int64)
-    if faces.min() == 1:
-        faces -= 1
-
-    skin_mask, component_report = _largest_component_mask(len(vertices), faces)
-    if int(skin_mask.sum()) < 5000:
-        raise RuntimeError(
-            f"Largest FaceVerse surface component is unexpectedly small: {int(skin_mask.sum())}"
-        )
-    print({"faceverse_surface_components": component_report})
-    return vertices, faces, skin_mask, identity, scale, centre
-
-
+pipeline.FaceVerseModel_torch.__init__ = _init_with_complete_surface
 pipeline.FaceVerseModel_torch.run = _run_with_complete_coefficients
-pipeline.load_faceverse = _load_faceverse_complete_head
 
 
 if __name__ == "__main__":
