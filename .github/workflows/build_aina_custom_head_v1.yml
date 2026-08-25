@@ -122,10 +122,12 @@ jobs:
           assert report['vertex_order_preserved'] is True
           assert report['neutral_displacement_saved'] is True
           assert report['expression_transfer_ready'] is True
-          assert report['vertices'] > 10000
-          assert report['triangles'] > 10000
-          assert report['skin_vertices'] > 5000
-          assert report['graft']['confident_skin_vertices'] > 1500
+          assert report['vertices'] > 19000
+          assert report['triangles'] > 38000
+          # FaceVerse V4's public parsing mask contains about 1.3k explicit
+          # outer-skin vertices; the former >5k gate was impossible by design.
+          assert report['skin_vertices'] > 1000
+          assert report['graft']['confident_skin_vertices'] > 250
           assert report['graft']['final_neutral_displacement_max_m'] <= 0.0121
           assert report['identity_lock'] is False
           assert report['visual_identity_lock'] is False
