@@ -1,0 +1,184 @@
+name: Build AINA MPFB Custom Head v1
+
+on:
+  pull_request:
+    branches: [ci/aina-mpfb-head-v1-base]
+    paths:
+      - RUN_AINA_MPFB_CUSTOM_HEAD_V1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-mpfb-custom-head-v1
+  cancel-in-progress: true
+
+jobs:
+  mpfb_custom_head:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install image tooling
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install pillow
+
+      - name: Materialize approved AINA references
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT_V2.jpg.b64 > references/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > references/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > references/AINA_APPROVED_SIDE.jpg
+          test -s references/AINA_APPROVED_FRONT.jpg
+          test -s references/AINA_APPROVED_3Q.jpg
+          test -s references/AINA_APPROVED_SIDE.jpg
+
+      - name: Fetch active MPFB2 adult human generator
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/makehumancommunity/mpfb2.git external/mpfb2
+          test -s external/mpfb2/src/mpfb/__init__.py
+          test -s external/mpfb2/LICENSE.ASSETS.md
+          grep -qi 'CC0' external/mpfb2/LICENSE.ASSETS.md
+
+      - name: Install Blender 4.5.12 LTS and software rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Build new adult-topology AINA model
+        run: |
+          set +e
+          mkdir -p output_mpfb_head_v1/QA output_mpfb_head_v1/Preview
+          xvfb-run -a -s '-screen 0 1600x900x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/aina_mpfb_custom_head_v1.py -- \
+            --mpfb-root external/mpfb2 \
+            --out output_mpfb_head_v1 \
+            2>&1 | tee output_mpfb_head_v1/QA/AINA_MPFB_CUSTOM_HEAD_V1_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output_mpfb_head_v1/QA/AINA_MPFB_CUSTOM_HEAD_V1_EXIT.txt
+          exit "$code"
+
+      - name: Build approved-reference, beauty and clay review sheets
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw
+
+          root = Path('output_mpfb_head_v1')
+          preview = root / 'Preview'
+          qa = root / 'QA'
+          rows = [
+              ('references/AINA_APPROVED_FRONT.jpg', preview / 'AINA_MPFB_CUSTOM_HEAD_FRONT.png', preview / 'AINA_MPFB_CUSTOM_HEAD_CLAY_FRONT.png', 'FRONT'),
+              ('references/AINA_APPROVED_3Q.jpg', preview / 'AINA_MPFB_CUSTOM_HEAD_THREE_QUARTER.png', preview / 'AINA_MPFB_CUSTOM_HEAD_CLAY_THREE_QUARTER.png', '3Q'),
+              ('references/AINA_APPROVED_SIDE.jpg', preview / 'AINA_MPFB_CUSTOM_HEAD_SIDE.png', preview / 'AINA_MPFB_CUSTOM_HEAD_CLAY_SIDE.png', 'SIDE'),
+          ]
+          panels = []
+          for ref_path, beauty_path, clay_path, label in rows:
+              ref = Image.open(ref_path).convert('RGB')
+              beauty = Image.open(beauty_path).convert('RGB')
+              clay = Image.open(clay_path).convert('RGB')
+              for image in (ref, beauty, clay):
+                  image.thumbnail((390, 390))
+              panel = Image.new('RGB', (1200, 440), 'white')
+              panel.paste(ref, ((400 - ref.width) // 2, 5))
+              panel.paste(beauty, (400 + (400 - beauty.width) // 2, 5))
+              panel.paste(clay, (800 + (400 - clay.width) // 2, 5))
+              draw = ImageDraw.Draw(panel)
+              draw.text((10, 412), f'APPROVED AINA {label}', fill='black')
+              draw.text((410, 412), f'NEW MPFB AINA BEAUTY {label}', fill='black')
+              draw.text((810, 412), f'NEW MPFB AINA CLAY {label}', fill='black')
+              panels.append(panel)
+          sheet = Image.new('RGB', (1200, 440 * len(panels)), 'white')
+          for index, panel in enumerate(panels):
+              sheet.paste(panel, (0, index * 440))
+          sheet.save(qa / 'AINA_APPROVED_VS_MPFB_CUSTOM_HEAD_V1.png')
+
+          views = []
+          for label in ('FRONT', 'THREE_QUARTER', 'LEFT_45', 'RIGHT_45', 'SIDE'):
+              image = Image.open(preview / f'AINA_MPFB_CUSTOM_HEAD_{label}.png').convert('RGB')
+              image.thumbnail((350, 350))
+              panel = Image.new('RGB', (370, 390), 'white')
+              panel.paste(image, ((370 - image.width) // 2, 5))
+              ImageDraw.Draw(panel).text((10, 365), label, fill='black')
+              views.append(panel)
+          view_sheet = Image.new('RGB', (370 * 5, 390), 'white')
+          for index, panel in enumerate(views):
+              view_sheet.paste(panel, (index * 370, 0))
+          view_sheet.save(qa / 'AINA_MPFB_CUSTOM_HEAD_V1_5VIEW.png')
+          PY
+          test -s output_mpfb_head_v1/QA/AINA_APPROVED_VS_MPFB_CUSTOM_HEAD_V1.png
+          test -s output_mpfb_head_v1/QA/AINA_MPFB_CUSTOM_HEAD_V1_5VIEW.png
+
+      - name: Enforce direction-reset and real-model gates
+        run: |
+          set -euo pipefail
+          test -s output_mpfb_head_v1/AINA_MPFB_CUSTOM_HEAD_V1.blend
+          test -s output_mpfb_head_v1/AINA_MPFB_CUSTOM_HEAD_V1.glb
+          test -s output_mpfb_head_v1/QA/AINA_MPFB_CUSTOM_HEAD_V1_REPORT.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('output_mpfb_head_v1/QA/AINA_MPFB_CUSTOM_HEAD_V1_REPORT.json').read_text())
+          assert report['direction_reset'] is True
+          assert report['real_3d_model'] is True
+          assert report['replacement_effect_art_generated'] is False
+          assert report['rain_mesh_used'] is False
+          assert report['rain_shape_keys_used'] is False
+          assert report['topology_changed'] is False
+          assert report['vertices'] > 10000
+          assert report['triangles'] > 10000
+          assert report['rig_bones'] >= 20
+          assert report['head_analysis']['head_region_vertices'] > 700
+          assert report['identity_lock'] is False
+          assert report['visual_identity_lock'] is False
+          assert report['production_release'] is False
+          assert report['candidate'] is True
+          assert report['vrm_exported'] is False
+          print(json.dumps({
+              'product': report['product'],
+              'vertices': report['vertices'],
+              'triangles': report['triangles'],
+              'rig_bones': report['rig_bones'],
+              'head_region_vertices': report['head_analysis']['head_region_vertices'],
+              'sculpt_max_m': report['sculpt']['max_displacement_m'],
+              'new_direction': report['new_direction'],
+          }, indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-MPFB-CUSTOM-HEAD-V1
+          path: |
+            output_mpfb_head_v1/**
+            external/mpfb2/LICENSE.ASSETS.md
+            external/mpfb2/LICENSE.CODE.md
+          if-no-files-found: error
+          retention-days: 30
