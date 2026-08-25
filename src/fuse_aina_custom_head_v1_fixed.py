@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Corrected entry point for AINA Custom Head v1.
 
-This wrapper fixes two public FaceVerse integration details while keeping the
+This wrapper fixes three public FaceVerse integration details while keeping the
 core custom-head graft unchanged:
 
 1. ``FaceVerseModel_torch.all_dims`` covers identity, expression and texture,
@@ -12,8 +12,13 @@ core custom-head graft unchanged:
    replaced by the union of FaceVerse's explicit front-face mask and its scalp
    skin mask. If that union is unexpectedly small, the largest connected mesh
    component is included as a safe outer-surface fallback.
+3. The exact FaceVerse ``keypoints_68`` vertex indices are embedded in the
+   transfer NPZ. Later direct-reference sculpt stages can therefore use the
+   stable topology without downloading the FaceVerse model again.
 """
 from __future__ import annotations
+
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -24,6 +29,8 @@ import fuse_aina_custom_head_v1 as pipeline
 
 _ORIGINAL_INIT = pipeline.FaceVerseModel_torch.__init__
 _ORIGINAL_RUN = pipeline.FaceVerseModel_torch.run
+_ORIGINAL_SAVEZ = pipeline.np.savez_compressed
+_CURRENT_MODEL = None
 
 
 def _largest_component_mask(vertex_count: int, faces: np.ndarray) -> np.ndarray:
@@ -43,6 +50,7 @@ def _largest_component_mask(vertex_count: int, faces: np.ndarray) -> np.ndarray:
 
 
 def _init_with_complete_surface(self, *args, **kwargs):
+    global _CURRENT_MODEL
     _ORIGINAL_INIT(self, *args, **kwargs)
     vertex_count = int(self.meanshape.shape[1])
     faces = np.asarray(self.tri.cpu(), dtype=np.int64)
@@ -66,13 +74,25 @@ def _init_with_complete_surface(self, *args, **kwargs):
             f"{int(complete_surface.sum())}"
         )
 
+    landmark_ids = np.asarray(self.fvd["keypoints_68"], dtype=np.int64).reshape(-1)
+    if len(landmark_ids) != 68:
+        raise RuntimeError(f"Expected 68 FaceVerse landmark indices, got {len(landmark_ids)}")
+    if landmark_ids.min() < 0 or landmark_ids.max() >= vertex_count:
+        raise RuntimeError(
+            f"FaceVerse landmark indices are outside the topology: "
+            f"min={int(landmark_ids.min())}, max={int(landmark_ids.max())}, "
+            f"vertices={vertex_count}"
+        )
+
     self.fvd["parsing"]["skin"] = complete_surface.astype(np.uint8)
+    _CURRENT_MODEL = self
     print(
         {
             "faceverse_surface_mask": {
                 "parsing_skin_vertices": int(parsing_skin.sum()),
                 "front_face_vertices": int(front_face.sum()),
                 "complete_surface_vertices": int(complete_surface.sum()),
+                "landmark_indices": int(len(landmark_ids)),
             }
         }
     )
@@ -100,8 +120,23 @@ def _run_with_complete_coefficients(self, coeffs, only_lms=False, use_color=Fals
     )
 
 
+def _savez_with_landmarks(file, *args, **kwargs):
+    path = Path(file)
+    if path.name == "AINA_CUSTOM_HEAD_TRANSFER_v1.npz":
+        if _CURRENT_MODEL is None:
+            raise RuntimeError("FaceVerse model was not captured before writing the transfer NPZ")
+        landmark_ids = np.asarray(
+            _CURRENT_MODEL.fvd["keypoints_68"], dtype=np.int32
+        ).reshape(-1)
+        if len(landmark_ids) != 68:
+            raise RuntimeError(f"Expected 68 transfer landmarks, got {len(landmark_ids)}")
+        kwargs["landmark_ids"] = landmark_ids
+    return _ORIGINAL_SAVEZ(file, *args, **kwargs)
+
+
 pipeline.FaceVerseModel_torch.__init__ = _init_with_complete_surface
 pipeline.FaceVerseModel_torch.run = _run_with_complete_coefficients
+pipeline.np.savez_compressed = _savez_with_landmarks
 
 
 if __name__ == "__main__":
