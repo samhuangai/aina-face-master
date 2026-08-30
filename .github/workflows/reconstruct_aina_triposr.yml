@@ -1,0 +1,83 @@
+name: Reconstruct AINA Reference with TripoSR
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - .github/workflows/reconstruct_aina_triposr.yml
+      - references/AINA_NEW_REFERENCE_FRONT.jpg.b64
+      - RUN_AINA_TRIPOSR
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  reconstruct:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      OMP_NUM_THREADS: '4'
+      MKL_NUM_THREADS: '4'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Materialize approved AINA front reference
+        run: |
+          mkdir -p reference
+          base64 -d references/AINA_NEW_REFERENCE_FRONT.jpg.b64 > reference/AINA_FRONT.jpg
+          test -s reference/AINA_FRONT.jpg
+          file reference/AINA_FRONT.jpg
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install CPU inference runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential git libgl1 libglib2.0-0
+          python -m pip install --upgrade pip setuptools wheel
+          pip install torch==2.2.2 torchvision==0.17.2 --index-url https://download.pytorch.org/whl/cpu
+          git clone --depth 1 https://github.com/VAST-AI-Research/TripoSR.git TripoSR
+          cd TripoSR
+          pip install omegaconf==2.3.0 Pillow==10.1.0 einops==0.7.0 transformers==4.35.0 trimesh==4.0.5 huggingface-hub imageio xatlas==0.0.9 moderngl==5.10.0 rembg onnxruntime
+          pip install git+https://github.com/tatsy/torchmcubes.git
+      - name: Reconstruct reference geometry on CPU
+        run: |
+          set -euo pipefail
+          cd TripoSR
+          python run.py ../reference/AINA_FRONT.jpg \
+            --device cpu \
+            --chunk-size 1024 \
+            --mc-resolution 128 \
+            --foreground-ratio 0.90 \
+            --model-save-format glb \
+            --output-dir ../output_triposr \
+            2>&1 | tee ../output_triposr_build.log
+          test -s ../output_triposr/0/mesh.glb
+          cp ../output_triposr_build.log ../output_triposr/BUILD.log
+          cp ../reference/AINA_FRONT.jpg ../output_triposr/AINA_REFERENCE_FRONT.jpg
+      - name: Audit reconstructed mesh
+        run: |
+          python - <<'PY'
+          import json, trimesh
+          from pathlib import Path
+          p=Path('output_triposr/0/mesh.glb')
+          scene=trimesh.load(p,force='scene')
+          meshes=[g for g in scene.geometry.values() if hasattr(g,'vertices')]
+          report={
+            'geometry_count':len(meshes),
+            'vertices':sum(len(m.vertices) for m in meshes),
+            'faces':sum(len(m.faces) for m in meshes),
+            'bounds':scene.bounds.tolist(),
+            'source':'AINA approved front identity reference',
+            'model':'VAST-AI-Research/TripoSR',
+            'production_lock':False,
+          }
+          assert report['vertices']>1000 and report['faces']>1000
+          Path('output_triposr/TRIPOSR_REPORT.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+          print(json.dumps(report,indent=2))
+          PY
+          sha256sum output_triposr/0/mesh.glb > output_triposr/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AINA-TRIPOSR-REFERENCE-GEOMETRY
+          path: output_triposr/**
+          if-no-files-found: error
+          retention-days: 30
