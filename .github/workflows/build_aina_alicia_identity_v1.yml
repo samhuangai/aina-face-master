@@ -1,0 +1,104 @@
+name: Build AINA Alicia Identity Source v1
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - src/blender/build_aina_alicia_identity_v1.py
+      - .github/workflows/build_aina_alicia_identity_v1.yml
+      - RUN_AINA_ALICIA_IDENTITY_V1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aina-alicia-identity-source-v1
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - name: Checkout AINA builder
+        uses: actions/checkout@v4
+
+      - name: Checkout licensed Alicia VRM sample
+        uses: actions/checkout@v4
+        with:
+          repository: vrm-c/UniVRM
+          path: UniVRM
+          fetch-depth: 1
+
+      - name: Prepare Alicia technical base
+        run: |
+          set -euo pipefail
+          mkdir -p source
+          cp UniVRM/Tests/Models/Alicia_vrm-0.51/AliciaSolid_vrm-0.51.vrm \
+             source/AliciaSolid.glb
+          test -s source/AliciaSolid.glb
+          ls -lh source/AliciaSolid.glb
+
+      - name: Install Blender 4.5.12 LTS and software renderer
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Build editable AINA source, GLB, FBX and real Blender previews
+        run: |
+          set -euo pipefail
+          mkdir -p output_aina_alicia_v1/QA
+          xvfb-run -a -s '-screen 0 1600x1200x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/build_aina_alicia_identity_v1.py -- \
+            --input source/AliciaSolid.glb \
+            --out output_aina_alicia_v1 \
+            2>&1 | tee output_aina_alicia_v1/QA/BUILD.log
+
+      - name: Verify deliverables and preserve provenance
+        run: |
+          set -euo pipefail
+          test -s output_aina_alicia_v1/AINA_IDENTITY_MASTER_ALICIA_BASE_v1.blend
+          test -s output_aina_alicia_v1/AINA_IDENTITY_MASTER_ALICIA_BASE_v1.glb
+          test -s output_aina_alicia_v1/AINA_SOURCE_MANIFEST.json
+          test -s output_aina_alicia_v1/LICENSE_BASE_MODEL.txt
+          test -s output_aina_alicia_v1/Preview/AINA_FRONT.png
+          test -s output_aina_alicia_v1/Preview/AINA_THREE_QUARTER.png
+          test -s output_aina_alicia_v1/Preview/AINA_PROFILE.png
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('output_aina_alicia_v1/AINA_SOURCE_MANIFEST.json').read_text())
+          assert report['real_blend_source'] is True
+          assert report['source_file'] == 'AINA_IDENTITY_MASTER_ALICIA_BASE_v1.blend'
+          assert report['identity_lock'] is False
+          assert report['visual_identity_lock'] is False
+          assert report['production_release'] is False
+          assert report['vrm_exported'] is False
+          print(json.dumps(report, indent=2, ensure_ascii=False))
+          PY
+          find output_aina_alicia_v1 -maxdepth 3 -type f -printf '%p %s bytes\n' | sort
+
+      - name: Upload editable AINA source package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-ALICIA-IDENTITY-SOURCE-V1
+          path: output_aina_alicia_v1/**
+          if-no-files-found: warn
+          retention-days: 30
