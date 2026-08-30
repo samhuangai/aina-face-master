@@ -1,0 +1,193 @@
+name: Resume AINA V8 Production From Validated VRM
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - tools/strip_vrm_extensions.py
+      - src/blender/finalize_aina_v8.py
+      - .github/workflows/resume_aina_v8_production.yml
+      - RUN_RESUME_AINA_V8_PRODUCTION
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: resume-aina-v8-production
+  cancel-in-progress: true
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - name: Checkout current AINA production tools
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install packaging dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install pillow
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zip
+
+      - name: Download the validated V8 VRM build payload
+        run: |
+          set -euo pipefail
+          rm -rf source_output output
+          mkdir -p source_output output/QA
+          gh run download 33316657535 \
+            --repo "$GITHUB_REPOSITORY" \
+            --name AINA-V8-BUILD-DIAGNOSTICS \
+            --dir source_output
+          test -s source_output/AINA_VRM_CANDIDATE_V8.vrm
+          test -s source_output/AINA_VISUAL_MASTER_V8.glb
+          cp -a source_output/. output/
+          python tools/strip_vrm_extensions.py \
+            output/AINA_VISUAL_MASTER_V8.glb \
+            output/AINA_BLENDER_SOURCE_V8.glb \
+            2>&1 | tee output/QA/AINA_V8_STRIP_EXTENSIONS.log
+          test -s output/AINA_BLENDER_SOURCE_V8.glb
+
+      - name: Install Blender 4.5.12 LTS
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Create editable Blender source and actual rendered QA
+        run: |
+          set +e
+          xvfb-run -a -s '-screen 0 1800x1200x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/finalize_aina_v8.py -- \
+            --input output/AINA_BLENDER_SOURCE_V8.glb \
+            --out output \
+            2>&1 | tee output/QA/AINA_V8_BLENDER_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output/QA/AINA_V8_FINALIZER_EXIT.txt
+          exit "$code"
+
+      - name: Upload resumable diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V8-RESUME-DIAGNOSTICS
+          path: output/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Verify actual editable outputs
+        run: |
+          set -euo pipefail
+          test -s output/AINA_MASTER_V8.blend
+          test -s output/AINA_EXPORT_V8.glb
+          test -s output/AINA_EXPORT_V8.fbx
+          test -s output/Preview/AINA_PORTRAIT_FRONT.png
+          test -s output/Preview/AINA_PORTRAIT_3Q.png
+          test -s output/Preview/AINA_PORTRAIT_PROFILE.png
+          test -s output/Preview/AINA_EXPR_NEUTRAL.png
+          test -s output/Preview/AINA_EXPR_HAPPY.png
+          test -s output/Preview/AINA_EXPR_BLINK.png
+          test -s output/Preview/AINA_EXPR_AA.png
+          test -s output/Preview/AINA_FULLBODY_FRONT.png
+          test -s output/Preview/AINA_FULLBODY_3Q.png
+          test -s output/QA/AINA_BLENDER_QA.json
+
+      - name: Compose portrait, expression and full-body review sheets
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageOps, ImageDraw
+          root=Path('output'); p=root/'Preview'
+          def fit(name,size):
+              return ImageOps.fit(Image.open(p/name).convert('RGB'),size,Image.Resampling.LANCZOS)
+          portrait=Image.new('RGB',(3072,1024),(18,24,38))
+          for i,name in enumerate(('AINA_PORTRAIT_FRONT.png','AINA_PORTRAIT_3Q.png','AINA_PORTRAIT_PROFILE.png')):
+              portrait.paste(fit(name,(1024,1024)),(i*1024,0))
+          portrait.save(p/'AINA_PORTRAIT_3VIEW.png',quality=95)
+          labels=('NEUTRAL','HAPPY','BLINK','AA')
+          expr=Image.new('RGB',(1536,1536),(18,24,38)); draw=ImageDraw.Draw(expr)
+          for i,label in enumerate(labels):
+              x=(i%2)*768; y=(i//2)*768
+              expr.paste(fit(f'AINA_EXPR_{label}.png',(768,768)),(x,y))
+              draw.text((x+24,y+24),label,fill='white')
+          expr.save(p/'AINA_EXPRESSION_4VIEW.png',quality=95)
+          body=Image.new('RGB',(1536,1024),(18,24,38))
+          body.paste(fit('AINA_FULLBODY_FRONT.png',(768,1024)),(0,0))
+          body.paste(fit('AINA_FULLBODY_3Q.png',(768,1024)),(768,0))
+          body.save(p/'AINA_FULLBODY_2VIEW.png',quality=95)
+          readme='''# AINA V8 生产源工程\n\n本包包含真实可编辑 Blender 工程、正式 VRM 1.0 候选、GLB/FBX 交换文件、实际 Blender 三视图、表情和全身 QA。\n\n## 主要文件\n- `AINA_MASTER_V8.blend`：主编辑源工程。\n- `AINA_VRM_CANDIDATE_V8.vrm`：54 个 Humanoid 映射、14 个标准表达预设。\n- `AINA_EXPORT_V8.glb` / `.fbx`：研发交换格式。\n- `AINA_BLENDER_SOURCE_V8.glb`：与正式 VRM 同模型、去除运行扩展的 Blender 安全导入版。\n- `Preview/`：实际模型正面、3/4、侧面、表情和全身渲染。\n- `QA/`：骨骼、Morph、导出、重新打开和重新导入验证。\n\n模型保留 57 个原始面部 Morph、全身骨骼和蒙皮。最终 Identity Lock 只依据真实三视图人工审核，不以拟合分数冒充人物相似度。\n'''
+          (root/'README_中文.md').write_text(readme,encoding='utf-8')
+          PY
+
+      - name: Enforce VRM, rig, Morph and clean-source gates
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,struct
+          from pathlib import Path
+          d=Path('output/AINA_VRM_CANDIDATE_V8.vrm').read_bytes()
+          magic,version,total=struct.unpack_from('<4sII',d,0)
+          assert magic==b'glTF' and version==2 and total==len(d)
+          offset=12; document=None
+          while offset<total:
+              length,kind=struct.unpack_from('<II',d,offset); offset+=8
+              chunk=d[offset:offset+length]; offset+=length
+              if kind==0x4E4F534A:
+                  document=json.loads(chunk.decode().rstrip(' \0'))
+          vrm=document['extensions']['VRMC_vrm']
+          assert vrm['specVersion']=='1.0'
+          assert len(vrm['humanoid']['humanBones'])>=54
+          assert len(vrm['expressions']['preset'])>=14
+          assert len(document['meshes'][0]['primitives'][0].get('targets',[]))==57
+          assert any(n.get('name')=='AINA_Updo' for n in document['nodes'])
+          assert any(n.get('name')=='AINA_Core_Collar' for n in document['nodes'])
+          print({'bytes':len(d),'bones':len(vrm['humanoid']['humanBones']),'expressions':len(vrm['expressions']['preset']),'morphs':57})
+          PY
+          xvfb-run -a "$BLENDER" output/AINA_MASTER_V8.blend \
+            --background --python-exit-code 1 \
+            --python-expr "import bpy; assert any(o.type=='ARMATURE' for o in bpy.data.objects); assert max((len(o.data.shape_keys.key_blocks)-1 for o in bpy.data.objects if o.type=='MESH' and o.data.shape_keys),default=0)>=57; print('BLEND_REOPEN_PASS')" \
+            | tee output/QA/AINA_BLEND_REOPEN.log
+          xvfb-run -a "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python-expr "import bpy; bpy.ops.import_scene.gltf(filepath='$PWD/output/AINA_EXPORT_V8.glb'); assert any(o.type=='ARMATURE' for o in bpy.data.objects); print('GLB_REIMPORT_PASS',len(bpy.data.objects))" \
+            | tee output/QA/AINA_GLB_REIMPORT.log
+
+      - name: Package release and checksums
+        run: |
+          set -euo pipefail
+          find output -type f ! -name SHA256SUMS.txt ! -name AINA_V8_PRODUCTION_SOURCE.zip -print0 \
+            | sort -z | xargs -0 sha256sum > output/SHA256SUMS.txt
+          (cd output && zip -9 -r ../AINA_V8_PRODUCTION_SOURCE.zip . >/dev/null)
+          mv AINA_V8_PRODUCTION_SOURCE.zip output/
+          sha256sum output/AINA_V8_PRODUCTION_SOURCE.zip >> output/SHA256SUMS.txt
+          find output -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
+
+      - name: Upload completed AINA V8 source package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V8-PRODUCTION-SOURCE-COMPLETE
+          path: output/**
+          if-no-files-found: error
+          retention-days: 30
