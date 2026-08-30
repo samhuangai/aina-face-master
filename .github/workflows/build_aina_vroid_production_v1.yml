@@ -1,0 +1,74 @@
+name: Build AINA VRoid Production Source v1
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - src/blender/build_aina_vroid_production_v1.py
+      - .github/workflows/build_aina_vroid_production_v1.yml
+      - RUN_BUILD_AINA_VROID_V1
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: madjin/vrm-samples
+          path: vrm-samples
+          fetch-depth: 1
+      - name: Prepare VRoid source
+        run: |
+          mkdir -p source
+          cp vrm-samples/vroid/fem_vroid.vrm source/fem_vroid.glb
+          cp vrm-samples/LICENSE source/BASE_LICENSE.txt || true
+          test -s source/fem_vroid.glb
+      - name: Install Blender 4.5.12 LTS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          curl -fL --retry 3 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+      - name: Build editable AINA model
+        run: |
+          xvfb-run -a -s '-screen 0 1800x1400x24' "$BLENDER" --background --factory-startup --python-exit-code 1 --python src/blender/build_aina_vroid_production_v1.py -- --input source/fem_vroid.glb --out output_aina_vroid_v1 2>&1 | tee output_aina_vroid_v1_build.log
+          test -s output_aina_vroid_v1/AINA_MASTER_VROID_v1.blend
+          test -s output_aina_vroid_v1/AINA_EXPORT_VROID_v1.glb
+          test -s output_aina_vroid_v1/AINA_EXPORT_VROID_v1.fbx
+          test -s output_aina_vroid_v1/Preview/AINA_FRONT.png
+          test -s output_aina_vroid_v1/Preview/AINA_THREE_QUARTER.png
+          test -s output_aina_vroid_v1/Preview/AINA_PROFILE.png
+      - name: Clean reimport GLB and verify rig/morphs
+        run: |
+          cat > /tmp/verify.py <<'PY'
+          import bpy,sys,json
+          from pathlib import Path
+          p=Path(sys.argv[sys.argv.index('--')+1])
+          bpy.ops.wm.read_factory_settings(use_empty=True)
+          bpy.ops.import_scene.gltf(filepath=str(p))
+          meshes=[o for o in bpy.context.scene.objects if o.type=='MESH']
+          arms=[o for o in bpy.context.scene.objects if o.type=='ARMATURE']
+          morphs=sum(len(o.data.shape_keys.key_blocks) for o in meshes if o.data.shape_keys)
+          r={'meshes':len(meshes),'armatures':len(arms),'morph_keys':morphs}
+          assert arms and morphs>=58
+          Path('output_aina_vroid_v1/REIMPORT_QA.json').write_text(json.dumps(r,indent=2))
+          print(r)
+          PY
+          "$BLENDER" --background --factory-startup --python-exit-code 1 --python /tmp/verify.py -- output_aina_vroid_v1/AINA_EXPORT_VROID_v1.glb
+          sha256sum output_aina_vroid_v1/AINA_MASTER_VROID_v1.blend output_aina_vroid_v1/AINA_EXPORT_VROID_v1.glb output_aina_vroid_v1/AINA_EXPORT_VROID_v1.fbx > output_aina_vroid_v1/SHA256SUMS.txt
+          cp source/BASE_LICENSE.txt output_aina_vroid_v1/BASE_LICENSE.txt || true
+          cp output_aina_vroid_v1_build.log output_aina_vroid_v1/QA_BUILD.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AINA-VROID-PRODUCTION-SOURCE-V1
+          path: output_aina_vroid_v1/**
+          if-no-files-found: error
+          retention-days: 30
