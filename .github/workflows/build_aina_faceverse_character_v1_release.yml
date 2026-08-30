@@ -1,0 +1,210 @@
+name: Build and Publish AINA FaceVerse Character v1
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - src/reshape_aina_faceverse_v3.py
+      - src/blender/build_aina_faceverse_character_v1.py
+      - .github/workflows/build_aina_faceverse_character_v1_release.yml
+      - RUN_AINA_FACEVERSE_CHARACTER_V1_RELEASE
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: aina-faceverse-character-v1-release
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MPLBACKEND: Agg
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - name: Checkout AINA source branch
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Python dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install numpy==1.26.4 scipy trimesh matplotlib pillow requests
+
+      - name: Download latest FaceVerse transfer
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics source
+          python - <<'PY' 2>&1 | tee diagnostics/01_download_transfer.log
+          import io, os, shutil, zipfile
+          from pathlib import Path
+          import requests
+          repository=os.environ['GITHUB_REPOSITORY']
+          headers={
+            'Authorization':f"Bearer {os.environ['GH_TOKEN']}",
+            'Accept':'application/vnd.github+json',
+            'X-GitHub-Api-Version':'2022-11-28',
+          }
+          name='AINA-DIRECT-SCULPT-V2-FIXED-DIAGNOSTICS'
+          r=requests.get(f'https://api.github.com/repos/{repository}/actions/artifacts?name={name}&per_page=100',headers=headers,timeout=60)
+          r.raise_for_status()
+          items=[x for x in r.json().get('artifacts',[]) if not x.get('expired')]
+          if not items: raise SystemExit(f'No unexpired {name} artifact')
+          art=max(items,key=lambda x:x['id'])
+          z=requests.get(art['archive_download_url'],headers=headers,timeout=300,allow_redirects=True)
+          z.raise_for_status()
+          root=Path('source_artifact')
+          if root.exists(): shutil.rmtree(root)
+          root.mkdir()
+          with zipfile.ZipFile(io.BytesIO(z.content)) as archive: archive.extractall(root)
+          matches=list(root.rglob('AINA_DIRECT_REFERENCE_TRANSFER_v2.npz'))
+          if not matches: raise FileNotFoundError('AINA_DIRECT_REFERENCE_TRANSFER_v2.npz')
+          shutil.copy2(matches[0],'source/AINA_DIRECT_REFERENCE_TRANSFER_v2.npz')
+          Path('source/source_artifact_id.txt').write_text(str(art['id']),encoding='utf-8')
+          print({'artifact_id':art['id'],'size':art['size_in_bytes']})
+          PY
+          test -s source/AINA_DIRECT_REFERENCE_TRANSFER_v2.npz
+
+      - name: Run corrected AINA identity reshaper
+        run: |
+          set +e
+          python src/reshape_aina_faceverse_v3.py \
+            --input source/AINA_DIRECT_REFERENCE_TRANSFER_v2.npz \
+            --out face_v3 \
+            2>&1 | tee diagnostics/02_reshape_identity.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > diagnostics/02_reshape_identity.exit
+          exit "$code"
+
+      - name: Verify reshaped identity
+        run: |
+          set -euo pipefail
+          test -s face_v3/AINA_FACEVERSE_IDENTITY_TRANSFER_V3.npz
+          test -s face_v3/AINA_FACEVERSE_IDENTITY_V3_FULL.glb
+          test -s face_v3/AINA_FACEVERSE_IDENTITY_V3_SURFACE.obj
+          test -s face_v3/AINA_FACEVERSE_IDENTITY_V3_REPORT.json
+
+      - name: Install Blender 4.5.12 LTS
+        run: |
+          set -euo pipefail
+          sudo apt-get update 2>&1 | tee diagnostics/03_apt_update.log
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6 \
+            2>&1 | tee diagnostics/04_install_blender_runtime.log
+          sudo ldconfig
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz \
+            2>&1 | tee diagnostics/05_download_blender.log
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Build editable Blender character
+        run: |
+          set +e
+          mkdir -p output_aina_faceverse_v1/QA
+          xvfb-run -a -s '-screen 0 1600x1200x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/build_aina_faceverse_character_v1.py -- \
+            --transfer face_v3/AINA_FACEVERSE_IDENTITY_TRANSFER_V3.npz \
+            --out output_aina_faceverse_v1 \
+            2>&1 | tee diagnostics/06_blender_build.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > diagnostics/06_blender_build.exit
+          exit "$code"
+
+      - name: Assemble verified source package
+        run: |
+          set -euo pipefail
+          test -s output_aina_faceverse_v1/AINA_IDENTITY_MASTER_FACEVERSE_v1.blend
+          test -s output_aina_faceverse_v1/AINA_IDENTITY_MASTER_FACEVERSE_v1.glb
+          test -s output_aina_faceverse_v1/AINA_IDENTITY_MASTER_FACEVERSE_v1.fbx
+          test -s output_aina_faceverse_v1/AINA_SOURCE_MANIFEST.json
+          test -s output_aina_faceverse_v1/Preview/AINA_FRONT.png
+          test -s output_aina_faceverse_v1/Preview/AINA_THREE_QUARTER.png
+          test -s output_aina_faceverse_v1/Preview/AINA_PROFILE.png
+          mkdir -p output_aina_faceverse_v1/IdentityV3 output_aina_faceverse_v1/IdentityV3_QA output_aina_faceverse_v1/BuildDiagnostics
+          cp face_v3/AINA_FACEVERSE_IDENTITY_TRANSFER_V3.npz output_aina_faceverse_v1/IdentityV3/
+          cp face_v3/AINA_FACEVERSE_IDENTITY_V3_FULL.glb output_aina_faceverse_v1/IdentityV3/
+          cp face_v3/AINA_FACEVERSE_IDENTITY_V3_FULL.obj output_aina_faceverse_v1/IdentityV3/
+          cp face_v3/AINA_FACEVERSE_IDENTITY_V3_SURFACE.glb output_aina_faceverse_v1/IdentityV3/
+          cp face_v3/AINA_FACEVERSE_IDENTITY_V3_SURFACE.obj output_aina_faceverse_v1/IdentityV3/
+          cp face_v3/AINA_FACEVERSE_IDENTITY_V3_REPORT.json output_aina_faceverse_v1/IdentityV3/
+          if [ -d face_v3/QA ]; then cp -a face_v3/QA/. output_aina_faceverse_v1/IdentityV3_QA/; fi
+          cp -a diagnostics/. output_aina_faceverse_v1/BuildDiagnostics/
+          cp source/source_artifact_id.txt output_aina_faceverse_v1/BuildDiagnostics/
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('output_aina_faceverse_v1/AINA_SOURCE_MANIFEST.json')
+          manifest=json.loads(p.read_text(encoding='utf-8'))
+          assert manifest['real_blend_source'] is True
+          assert manifest['identity_lock'] is False
+          assert manifest['visual_identity_lock'] is False
+          assert manifest['production_release'] is False
+          print(json.dumps(manifest,indent=2,ensure_ascii=False))
+          PY
+          (cd output_aina_faceverse_v1 && zip -r -9 ../AINA-IDENTITY-MASTER-FACEVERSE-V1.zip .)
+          sha256sum AINA-IDENTITY-MASTER-FACEVERSE-V1.zip > AINA-IDENTITY-MASTER-FACEVERSE-V1.sha256
+
+      - name: Publish successful source package release
+        run: |
+          set -euo pipefail
+          tag='aina-identity-master-faceverse-v1-build'
+          gh release delete "$tag" --yes --cleanup-tag || true
+          gh release create "$tag" \
+            AINA-IDENTITY-MASTER-FACEVERSE-V1.zip \
+            AINA-IDENTITY-MASTER-FACEVERSE-V1.sha256 \
+            output_aina_faceverse_v1/Preview/AINA_FRONT.png \
+            output_aina_faceverse_v1/Preview/AINA_THREE_QUARTER.png \
+            output_aina_faceverse_v1/Preview/AINA_PROFILE.png \
+            --target "$GITHUB_SHA" \
+            --title 'AINA Identity Master FaceVerse v1 — build candidate' \
+            --notes 'Editable Blender/GLB/FBX candidate. Identity and production locks remain false pending direct visual acceptance.' \
+            --prerelease
+
+      - name: Upload Actions artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-IDENTITY-MASTER-FACEVERSE-V1-RELEASE
+          path: |
+            output_aina_faceverse_v1/**
+            face_v3/**
+            diagnostics/**
+            AINA-IDENTITY-MASTER-FACEVERSE-V1.zip
+            AINA-IDENTITY-MASTER-FACEVERSE-V1.sha256
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Publish failure diagnostics when build fails
+        if: failure()
+        run: |
+          set +e
+          mkdir -p failure_package
+          cp -a diagnostics failure_package/ 2>/dev/null || true
+          cp -a face_v3 failure_package/ 2>/dev/null || true
+          cp -a output_aina_faceverse_v1 failure_package/ 2>/dev/null || true
+          cp -a source/source_artifact_id.txt failure_package/ 2>/dev/null || true
+          printf 'workflow=%s\nrun=%s\nsha=%s\n' "$GITHUB_WORKFLOW" "$GITHUB_RUN_ID" "$GITHUB_SHA" > failure_package/BUILD_FAILED.txt
+          zip -r -9 AINA-FACEVERSE-V1-BUILD-DIAGNOSTICS.zip failure_package
+          tag='aina-faceverse-v1-diagnostics-latest'
+          gh release delete "$tag" --yes --cleanup-tag || true
+          gh release create "$tag" AINA-FACEVERSE-V1-BUILD-DIAGNOSTICS.zip \
+            --target "$GITHUB_SHA" \
+            --title 'AINA FaceVerse v1 — latest build diagnostics' \
+            --notes 'Automatic diagnostics from the latest failed source build.' \
+            --prerelease
