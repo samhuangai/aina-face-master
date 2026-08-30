@@ -1,0 +1,134 @@
+name: Fast AINA V8 Blender Source and Review
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - src/blender/finalize_aina_v8_fast.py
+      - tools/strip_vrm_extensions.py
+      - .github/workflows/resume_aina_v8_fast.yml
+      - RUN_AINA_V8_FAST
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-v8-fast
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install package tools and retrieve validated VRM
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install pillow
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zip
+          rm -rf source_output output
+          mkdir -p source_output output/QA
+          gh run download 33316657535 \
+            --repo "$GITHUB_REPOSITORY" \
+            --name AINA-V8-BUILD-DIAGNOSTICS \
+            --dir source_output
+          cp -a source_output/. output/
+          python tools/strip_vrm_extensions.py \
+            output/AINA_VISUAL_MASTER_V8.glb \
+            output/AINA_BLENDER_SOURCE_V8.glb \
+            2>&1 | tee output/QA/AINA_V8_STRIP_EXTENSIONS.log
+          test -s output/AINA_VRM_CANDIDATE_V8.vrm
+          test -s output/AINA_BLENDER_SOURCE_V8.glb
+
+      - name: Install Blender 4.5.12 LTS
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Save editable source, export formats and render fast actual QA
+        run: |
+          set +e
+          xvfb-run -a -s '-screen 0 1400x900x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/finalize_aina_v8_fast.py -- \
+            --input output/AINA_BLENDER_SOURCE_V8.glb \
+            --out output \
+            2>&1 | tee output/QA/AINA_V8_FAST_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output/QA/AINA_V8_FAST_EXIT.txt
+          exit "$code"
+
+      - name: Upload fast diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V8-FAST-DIAGNOSTICS
+          path: output/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Verify and compose fast review package
+        run: |
+          set -euo pipefail
+          test -s output/AINA_MASTER_V8.blend
+          test -s output/AINA_EXPORT_V8.glb
+          test -s output/AINA_EXPORT_V8.fbx
+          test -s output/Preview/AINA_PORTRAIT_FRONT.png
+          test -s output/Preview/AINA_PORTRAIT_3Q.png
+          test -s output/Preview/AINA_PORTRAIT_PROFILE.png
+          test -s output/Preview/AINA_FULLBODY_FRONT.png
+          test -s output/QA/AINA_FAST_QA.json
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageOps,ImageDraw
+          root=Path('output');p=root/'Preview'
+          def fit(n,s):return ImageOps.fit(Image.open(p/n).convert('RGB'),s,Image.Resampling.LANCZOS)
+          view=Image.new('RGB',(1536,512),(18,24,38))
+          for i,n in enumerate(('AINA_PORTRAIT_FRONT.png','AINA_PORTRAIT_3Q.png','AINA_PORTRAIT_PROFILE.png')):view.paste(fit(n,(512,512)),(i*512,0))
+          view.save(p/'AINA_PORTRAIT_3VIEW.png')
+          labels=('NEUTRAL','HAPPY','BLINK','AA');e=Image.new('RGB',(1024,1024),(18,24,38));d=ImageDraw.Draw(e)
+          for i,n in enumerate(labels):
+              x=(i%2)*512;y=(i//2)*512;e.paste(fit(f'AINA_EXPR_{n}.png',(512,512)),(x,y));d.text((x+16,y+16),n,fill='white')
+          e.save(p/'AINA_EXPRESSION_4VIEW.png')
+          body=Image.new('RGB',(1024,768),(18,24,38));body.paste(fit('AINA_FULLBODY_FRONT.png',(512,768)),(0,0));body.paste(fit('AINA_FULLBODY_3Q.png',(512,768)),(512,0));body.save(p/'AINA_FULLBODY_2VIEW.png')
+          (root/'README_中文.md').write_text('AINA V8 快速真实 Blender 审片包：包含可编辑 Blend、VRM 1.0、GLB/FBX、57 个面部 Morph、完整骨骼与真实渲染。最终人物锁定仍以三视图人工审核为准。\n',encoding='utf-8')
+          PY
+          xvfb-run -a "$BLENDER" output/AINA_MASTER_V8.blend --background --python-exit-code 1 \
+            --python-expr "import bpy; assert any(o.type=='ARMATURE' for o in bpy.data.objects); assert max((len(o.data.shape_keys.key_blocks)-1 for o in bpy.data.objects if o.type=='MESH' and o.data.shape_keys),default=0)>=57; print('FAST_BLEND_REOPEN_PASS')" \
+            | tee output/QA/AINA_FAST_BLEND_REOPEN.log
+          find output -type f ! -name SHA256SUMS.txt ! -name AINA_V8_FAST_SOURCE.zip -print0 | sort -z | xargs -0 sha256sum > output/SHA256SUMS.txt
+          (cd output && zip -9 -r ../AINA_V8_FAST_SOURCE.zip . >/dev/null)
+          mv AINA_V8_FAST_SOURCE.zip output/
+          sha256sum output/AINA_V8_FAST_SOURCE.zip >> output/SHA256SUMS.txt
+
+      - name: Upload fast completed AINA V8 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V8-FAST-SOURCE-COMPLETE
+          path: output/**
+          if-no-files-found: error
+          retention-days: 30
