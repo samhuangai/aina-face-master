@@ -43,8 +43,8 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install numpy==1.26.4 scipy trimesh matplotlib pillow requests onnxruntime tqdm
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy==1.26.4 scipy trimesh matplotlib pillow requests onnxruntime tqdm opencv-python-headless
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
       - name: Materialize approved AINA references
         run: |
@@ -113,7 +113,7 @@ jobs:
           python src/sculpt_aina_direct_reference_v2.py 2>&1 | tee output_direct_sculpt_v2_build.log
           code=${PIPESTATUS[0]}
           echo "$code" > output_direct_sculpt_v2_exit.txt
-          tail -n 160 output_direct_sculpt_v2_build.log > output_direct_sculpt_v2_tail.txt
+          tail -n 200 output_direct_sculpt_v2_build.log > output_direct_sculpt_v2_tail.txt
           exit 0
 
       - name: Collect all outputs and logs
