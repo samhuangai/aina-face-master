@@ -1,0 +1,73 @@
+name: Build AINA MPFB Identity Master V3
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - src/blender/fix_aina_mpfb_v3_accessories.py
+      - .github/workflows/build_aina_mpfb_v3.yml
+      - RUN_AINA_MPFB_V3
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download pinned valid MPFB V2 source
+        run: |
+          pip install requests
+          python - <<'PY'
+          import io,os,requests,zipfile,shutil
+          from pathlib import Path
+          headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json'}
+          r=requests.get('https://api.github.com/repos/samhuangai/aina-face-master/actions/artifacts/9732976672/zip',headers=headers,timeout=300,allow_redirects=True);r.raise_for_status()
+          root=Path('source_artifact');root.mkdir()
+          with zipfile.ZipFile(io.BytesIO(r.content)) as z:z.extractall(root)
+          src=next(root.rglob('AINA_MPFB_IDENTITY_MASTER_V2.blend'));Path('source').mkdir();shutil.copy2(src,'source/AINA_MPFB_IDENTITY_MASTER_V2.blend')
+          print({'source':str(src),'bytes':src.stat().st_size})
+          PY
+          test -s source/AINA_MPFB_IDENTITY_MASTER_V2.blend
+      - name: Install Blender 4.5.12 LTS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          curl -fL --retry 3 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender && tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+      - name: Rebuild correctly weighted AINA accessories
+        run: |
+          mkdir -p output_mpfb_v3/QA
+          xvfb-run -a -s '-screen 0 1600x1200x24' "$BLENDER" --background --python-exit-code 1 --python src/blender/fix_aina_mpfb_v3_accessories.py -- --blend source/AINA_MPFB_IDENTITY_MASTER_V2.blend --out output_mpfb_v3 2>&1 | tee output_mpfb_v3/QA/BUILD.log
+      - name: Verify deliverables
+        run: |
+          test -s output_mpfb_v3/AINA_MPFB_IDENTITY_MASTER_V3.blend
+          test -s output_mpfb_v3/AINA_MPFB_IDENTITY_MASTER_V3.glb
+          test -s output_mpfb_v3/Preview/AINA_MPFB_V3_FRONT.png
+          test -s output_mpfb_v3/Preview/AINA_MPFB_V3_THREE_QUARTER.png
+          test -s output_mpfb_v3/Preview/AINA_MPFB_V3_PROFILE.png
+          python - <<'PY'
+          import json
+          r=json.load(open('output_mpfb_v3/QA/AINA_MPFB_V3_REPORT.json'))
+          assert r['body_vertices']==19158 and r['rig_bones']>=53
+          assert r['shape_keys']>=52 and r['shape_keys_nonzero']>=52
+          assert r['generated_accessories']>=30
+          print(json.dumps(r,indent=2))
+          PY
+          sha256sum output_mpfb_v3/AINA_MPFB_IDENTITY_MASTER_V3.* > output_mpfb_v3/QA/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-MPFB-IDENTITY-MASTER-V3
+          path: output_mpfb_v3/**
+          if-no-files-found: warn
+          retention-days: 30
