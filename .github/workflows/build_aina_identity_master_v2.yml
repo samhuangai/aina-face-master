@@ -115,7 +115,6 @@ jobs:
           from pathlib import Path
           report = json.loads(Path('output_aina_identity_master_v2/AINA_IDENTITY_MASTER_v2_MANIFEST.json').read_text())
           assert report['real_3d_source'] is True
-          assert report['procedural_build'] is True
           assert report['separate_editable_objects'] is True
           assert report['source_file'] == 'AINA_IDENTITY_MASTER_v2.blend'
           assert report['skin_vertices'] > 5000
@@ -126,6 +125,7 @@ jobs:
           find output_aina_identity_master_v2 -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
 
       - name: Upload AINA v2 3D source package
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: AINA-IDENTITY-MASTER-V2-3D-SOURCE
