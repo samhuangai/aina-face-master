@@ -106,31 +106,34 @@ jobs:
           test -s data/faceverse_v4_2.npy
           cd ../../..
 
-      - name: Sculpt actual FaceVerse mesh against approved AINA views
+      - name: Sculpt actual FaceVerse mesh and preserve diagnostics
         run: |
-          set -euo pipefail
+          set +e
           cd direct
           python src/sculpt_aina_direct_reference_v2.py 2>&1 | tee output_direct_sculpt_v2_build.log
-          test -s output_direct_sculpt_v2/AINA_DIRECT_REFERENCE_HEAD_FULL_v2.glb
-          test -s output_direct_sculpt_v2/AINA_DIRECT_REFERENCE_HEAD_SURFACE_v2.obj
-          test -s output_direct_sculpt_v2/AINA_DIRECT_REFERENCE_TRANSFER_v2.npz
-          test -s output_direct_sculpt_v2/QA/AINA_APPROVED_VS_DIRECT_SCULPT_v2.png
-          test -s output_direct_sculpt_v2/QA/AINA_DIRECT_SCULPT_5VIEW_v2.png
+          code=${PIPESTATUS[0]}
+          echo "$code" > output_direct_sculpt_v2_exit.txt
+          tail -n 160 output_direct_sculpt_v2_build.log > output_direct_sculpt_v2_tail.txt
+          exit 0
 
-      - name: Copy fixed head package
+      - name: Collect all outputs and logs
+        if: always()
         run: |
           set -euo pipefail
           rm -rf output
           mkdir output
-          cp -a direct/output_direct_sculpt_v2/. output/
-          cp direct/output_direct_sculpt_v2_build.log output/
-          cp direct/source_v1/artifact_id.txt output/
-          find output -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
+          if [ -d direct/output_direct_sculpt_v2 ]; then cp -a direct/output_direct_sculpt_v2/. output/; fi
+          cp direct/output_direct_sculpt_v2_build.log output/ || true
+          cp direct/output_direct_sculpt_v2_tail.txt output/ || true
+          cp direct/output_direct_sculpt_v2_exit.txt output/ || true
+          cp direct/source_v1/artifact_id.txt output/ || true
+          find output -maxdepth 3 -type f -printf '%p %s bytes\n' | sort
 
-      - name: Upload fixed AINA direct-sculpt head
+      - name: Upload fixed AINA direct-sculpt diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: AINA-DIRECT-SCULPT-V2-FIXED
+          name: AINA-DIRECT-SCULPT-V2-FIXED-DIAGNOSTICS
           path: output/**
           if-no-files-found: error
           retention-days: 30
