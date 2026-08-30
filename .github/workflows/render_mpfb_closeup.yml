@@ -1,0 +1,53 @@
+name: Render AINA MPFB Closeup Review
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - src/blender/render_mpfb_closeup.py
+      - .github/workflows/render_mpfb_closeup.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download MPFB source artifact
+        run: |
+          python - <<'PY'
+          import os,requests,zipfile,io
+          from pathlib import Path
+          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GH_TOKEN']; headers={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json'}
+          r=requests.get(f'https://api.github.com/repos/{repo}/actions/artifacts?name=AINA-MPFB-CUSTOM-HEAD-V1&per_page=100',headers=headers,timeout=60);r.raise_for_status()
+          items=[x for x in r.json().get('artifacts',[]) if not x.get('expired')]; art=max(items,key=lambda x:x['id'])
+          z=requests.get(art['archive_download_url'],headers=headers,timeout=300,allow_redirects=True);z.raise_for_status();Path('source').mkdir()
+          with zipfile.ZipFile(io.BytesIO(z.content)) as f:f.extractall('source')
+          print({'artifact':art['id']})
+          PY
+          find source -name 'AINA_MPFB_CUSTOM_HEAD_V1.blend' -size +1M | head -1 > source_path.txt
+          test -s source_path.txt
+      - name: Install Blender
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          curl -fL --retry 3 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender && tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+      - name: Render closeup
+        run: |
+          SRC=$(cat source_path.txt)
+          xvfb-run -a -s '-screen 0 1600x1200x24' "$BLENDER" --background --python-exit-code 1 --python src/blender/render_mpfb_closeup.py -- --blend "$SRC" --out output_mpfb_closeup
+          test -s output_mpfb_closeup/Preview/AINA_MPFB_CLOSE_YNEG_FRONT.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AINA-MPFB-CLOSEUP-REVIEW
+          path: output_mpfb_closeup/**
+          if-no-files-found: error
+          retention-days: 30
