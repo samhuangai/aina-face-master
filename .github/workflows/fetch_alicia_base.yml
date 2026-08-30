@@ -1,0 +1,36 @@
+name: Fetch Alicia VRM Base
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - .github/workflows/fetch_alicia_base.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout UniVRM sample repository
+        uses: actions/checkout@v4
+        with:
+          repository: vrm-c/UniVRM
+          path: UniVRM
+          fetch-depth: 1
+      - name: Collect Alicia sample
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          cp UniVRM/Tests/Models/Alicia_vrm-0.51/AliciaSolid_vrm-0.51.vrm output/AliciaSolid.vrm
+          cp UniVRM/Tests/Models/Alicia_vrm-0.51/readme.txt output/LICENSE_README.txt || true
+          ls -lh output
+      - name: Upload sample
+        uses: actions/upload-artifact@v4
+        with:
+          name: ALICIA-VRM-BASE
+          path: output/**
+          if-no-files-found: error
+          retention-days: 7
