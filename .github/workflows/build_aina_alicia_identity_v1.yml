@@ -5,6 +5,7 @@ on:
     branches: [aina-identity-master-v1-source]
     paths:
       - src/blender/build_aina_alicia_identity_v1.py
+      - src/blender/build_aina_alicia_identity_v1_fixed.py
       - .github/workflows/build_aina_alicia_identity_v1.yml
       - RUN_AINA_ALICIA_IDENTITY_V1
   workflow_dispatch:
@@ -65,7 +66,7 @@ jobs:
           mkdir -p output_aina_alicia_v1/QA
           xvfb-run -a -s '-screen 0 1600x1200x24' "$BLENDER" \
             --background --factory-startup --python-exit-code 1 \
-            --python src/blender/build_aina_alicia_identity_v1.py -- \
+            --python src/blender/build_aina_alicia_identity_v1_fixed.py -- \
             --input source/AliciaSolid.glb \
             --out output_aina_alicia_v1 \
             2>&1 | tee output_aina_alicia_v1/QA/BUILD.log
