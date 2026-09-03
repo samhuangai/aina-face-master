@@ -1,0 +1,127 @@
+name: Probe MakeHuman CC0 Clay Baseline
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - tools/makehuman_target_obj.py
+      - src/blender/render_makehuman_clay_probe.py
+      - .github/workflows/probe_makehuman_clay.yml
+      - RUN_MAKEHUMAN_CLAY_PROBE
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: makehuman-clay-probe
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - name: Checkout AINA tools
+        uses: actions/checkout@v4
+
+      - name: Checkout official MakeHuman source and CC0 assets
+        uses: actions/checkout@v4
+        with:
+          repository: makehumancommunity/makehuman
+          ref: master
+          path: makehuman-src
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build the adult Asian female neutral OBJ
+        run: |
+          set -euo pipefail
+          mkdir -p output/Preview output/QA output/License
+          python tools/makehuman_target_obj.py \
+            --base makehuman-src/makehuman/data/3dobjs/base.obj \
+            --target makehuman-src/makehuman/data/targets/macrodetails/asian-female-young.target:1.0 \
+            --output output/MAKEHUMAN_ASIAN_FEMALE_YOUNG.obj \
+            --report output/QA/MAKEHUMAN_TARGET_REPORT.json \
+            2>&1 | tee output/QA/MAKEHUMAN_TARGET_BUILD.log
+          cp makehuman-src/LICENSE.ASSETS.md output/License/
+          cp makehuman-src/LICENSE.CODE.md output/License/ || true
+          test -s output/MAKEHUMAN_ASIAN_FEMALE_YOUNG.obj
+          test -s output/QA/MAKEHUMAN_TARGET_REPORT.json
+
+      - name: Install Blender 4.5.12 LTS
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6 zip
+          sudo ldconfig
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Render real Blender neutral clay orientation probe
+        run: |
+          set +e
+          xvfb-run -a -s '-screen 0 1400x1000x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/render_makehuman_clay_probe.py -- \
+            --input output/MAKEHUMAN_ASIAN_FEMALE_YOUNG.obj \
+            --out output \
+            2>&1 | tee output/QA/MAKEHUMAN_CLAY_BLENDER.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output/QA/MAKEHUMAN_CLAY_EXIT.txt
+          exit "$code"
+
+      - name: Upload diagnostics even if a render step fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-MAKEHUMAN-CLAY-PROBE-DIAGNOSTICS
+          path: output/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Validate editable source and rendered views
+        run: |
+          set -euo pipefail
+          test -s output/MAKEHUMAN_ASIAN_FEMALE_YOUNG_CLAY_PROBE.blend
+          test -s output/MAKEHUMAN_ASIAN_FEMALE_YOUNG_CLAY_PROBE.glb
+          test -s output/Preview/MAKEHUMAN_CLAY_POS_Y.png
+          test -s output/Preview/MAKEHUMAN_CLAY_NEG_Y.png
+          test -s output/Preview/MAKEHUMAN_CLAY_POS_X.png
+          test -s output/Preview/MAKEHUMAN_CLAY_NEG_X.png
+          test -s output/Preview/MAKEHUMAN_CLAY_POS_Y_3Q.png
+          test -s output/Preview/MAKEHUMAN_CLAY_NEG_Y_3Q.png
+          xvfb-run -a "$BLENDER" output/MAKEHUMAN_ASIAN_FEMALE_YOUNG_CLAY_PROBE.blend \
+            --background --python-exit-code 1 \
+            --python-expr "import bpy; assert any(o.type=='MESH' for o in bpy.data.objects); print('MAKEHUMAN_CLAY_BLEND_REOPEN_PASS')" \
+            | tee output/QA/MAKEHUMAN_CLAY_REOPEN.log
+
+      - name: Package probe
+        run: |
+          set -euo pipefail
+          find output -type f ! -name SHA256SUMS.txt ! -name AINA_MAKEHUMAN_CLAY_PROBE.zip -print0 \
+            | sort -z | xargs -0 sha256sum > output/SHA256SUMS.txt
+          (cd output && zip -9 -r ../AINA_MAKEHUMAN_CLAY_PROBE.zip . >/dev/null)
+          mv AINA_MAKEHUMAN_CLAY_PROBE.zip output/
+          sha256sum output/AINA_MAKEHUMAN_CLAY_PROBE.zip >> output/SHA256SUMS.txt
+
+      - name: Upload completed clay probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-MAKEHUMAN-CLAY-PROBE-COMPLETE
+          path: output/**
+          if-no-files-found: error
+          retention-days: 30
