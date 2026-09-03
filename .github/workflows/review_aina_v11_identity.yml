@@ -5,6 +5,7 @@ on:
     branches: [aina-identity-master-v1-source]
     paths:
       - src/blender/refine_aina_v11_identity.py
+      - src/blender/refine_aina_v11_identity_fixed.py
       - .github/workflows/review_aina_v11_identity.yml
       - RUN_AINA_V11_REVIEW
   workflow_dispatch:
@@ -93,7 +94,7 @@ jobs:
           xvfb-run -a -s '-screen 0 1600x1000x24' "$BLENDER" \
             input/AINA_MASTER_V10.blend \
             --background --python-exit-code 1 \
-            --python src/blender/refine_aina_v11_identity.py -- \
+            --python src/blender/refine_aina_v11_identity_fixed.py -- \
             --out output \
             2>&1 | tee output/QA/AINA_V11_BUILD.log
           code=${PIPESTATUS[0]}
