@@ -32,20 +32,20 @@ def look_at(obj: bpy.types.Object, target: Vector) -> None:
 
 def normalize_vertical(meshes: list[bpy.types.Object]) -> str:
     minimum, maximum = bounds(meshes)
-    spans = maximum - minimum
-    largest = max(range(3), key=lambda index: spans[index])
+    span = maximum - minimum
+    largest = max(range(3), key=lambda index: span[index])
     axis = "XYZ"[largest]
     if axis == "Y":
         for obj in meshes:
             obj.rotation_euler.rotate_axis("X", math.radians(90))
-            bpy.context.view_layer.objects.active = obj
             obj.select_set(True)
+        bpy.context.view_layer.objects.active = meshes[0]
         bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
     elif axis == "X":
         for obj in meshes:
             obj.rotation_euler.rotate_axis("Y", math.radians(-90))
-            bpy.context.view_layer.objects.active = obj
             obj.select_set(True)
+        bpy.context.view_layer.objects.active = meshes[0]
         bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
     for obj in meshes:
         obj.select_set(False)
@@ -74,20 +74,20 @@ def main() -> None:
     if not meshes:
         raise RuntimeError("MakeHuman OBJ imported without mesh objects")
 
-    source_largest_axis = normalize_vertical(meshes)
+    source_axis = normalize_vertical(meshes)
     minimum, maximum = bounds(meshes)
     height = maximum.z - minimum.z
     center = (minimum + maximum) * 0.5
 
     clay = bpy.data.materials.new("AINA_IDENTITY_CLAY")
-    clay.diffuse_color = (0.58, 0.60, 0.64, 1.0)
+    clay.diffuse_color = (0.57, 0.59, 0.63, 1.0)
     clay.use_nodes = True
     bsdf = clay.node_tree.nodes.get("Principled BSDF")
     if bsdf:
-        bsdf.inputs["Base Color"].default_value = (0.58, 0.60, 0.64, 1.0)
-        bsdf.inputs["Roughness"].default_value = 0.64
+        bsdf.inputs["Base Color"].default_value = (0.57, 0.59, 0.63, 1.0)
+        bsdf.inputs["Roughness"].default_value = 0.68
         if "Specular IOR Level" in bsdf.inputs:
-            bsdf.inputs["Specular IOR Level"].default_value = 0.24
+            bsdf.inputs["Specular IOR Level"].default_value = 0.20
     for obj in meshes:
         obj.data.materials.clear()
         obj.data.materials.append(clay)
@@ -96,17 +96,16 @@ def main() -> None:
 
     world = bpy.data.worlds.new("AINA_CLAY_WORLD")
     world.use_nodes = True
-    world.node_tree.nodes["Background"].inputs["Color"].default_value = (0.025, 0.030, 0.042, 1)
-    world.node_tree.nodes["Background"].inputs["Strength"].default_value = 0.32
+    world.node_tree.nodes["Background"].inputs["Color"].default_value = (0.026, 0.031, 0.043, 1)
+    world.node_tree.nodes["Background"].inputs["Strength"].default_value = 0.38
     bpy.context.scene.world = world
 
     head_target = Vector((center.x, center.y, maximum.z - height * 0.115))
-    light_specs = (
-        ("KEY", (-0.55, 0.85, maximum.z + height * 0.02), 950, height * 0.45),
-        ("FILL", (0.65, 0.45, maximum.z - height * 0.11), 520, height * 0.38),
-        ("RIM", (0.0, -0.65, maximum.z + height * 0.01), 800, height * 0.34),
-    )
-    for name, location, energy, size in light_specs:
+    for name, location, energy, size in (
+        ("KEY", (-0.55, 0.85, maximum.z + height * 0.02), 900, height * 0.44),
+        ("FILL", (0.65, 0.45, maximum.z - height * 0.11), 460, height * 0.38),
+        ("RIM", (0.0, -0.65, maximum.z + height * 0.01), 650, height * 0.34),
+    ):
         bpy.ops.object.light_add(type="AREA", location=location)
         light = bpy.context.object
         light.name = "LGT_" + name
@@ -125,8 +124,13 @@ def main() -> None:
 
     scene = bpy.context.scene
     scene.render.engine = "BLENDER_EEVEE_NEXT"
-    scene.render.resolution_x = 768
-    scene.render.resolution_y = 768
+    try:
+        scene.eevee.taa_render_samples = 8
+        scene.eevee.taa_samples = 8
+    except Exception:
+        pass
+    scene.render.resolution_x = 512
+    scene.render.resolution_y = 512
     scene.render.resolution_percentage = 100
     scene.render.image_settings.file_format = "PNG"
     scene.render.image_settings.color_depth = "8"
@@ -162,7 +166,7 @@ def main() -> None:
     )
     report = {
         "source": str(source),
-        "source_largest_axis": source_largest_axis,
+        "source_largest_axis": source_axis,
         "mesh_objects": [obj.name for obj in meshes],
         "vertex_count": sum(len(obj.data.vertices) for obj in meshes),
         "polygon_count": sum(len(obj.data.polygons) for obj in meshes),
@@ -170,6 +174,7 @@ def main() -> None:
         "bounds_max": list(maximum),
         "height": height,
         "head_target": list(head_target),
+        "render_samples_requested": 8,
         "identity_lock": False,
         "purpose": "axis/orientation and neutral adult Asian female clay baseline probe",
     }
