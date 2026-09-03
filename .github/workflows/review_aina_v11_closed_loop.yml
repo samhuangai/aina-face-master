@@ -1,0 +1,302 @@
+name: Build AINA V11 Closed Loop Identity
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - tools/measure_aina_face.py
+      - tools/measure_aina_face_fixed.py
+      - tools/build_aina_v11.py
+      - src/blender/render_aina_front_quick.py
+      - .github/workflows/review_aina_v11_closed_loop.yml
+      - RUN_AINA_V11_CLOSED_LOOP
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-v11-closed-loop
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python build and face-analysis dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install numpy==1.26.4 pillow mediapipe==0.10.21 opencv-python-headless==4.11.0.86
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zip
+
+      - name: Download latest successful V10 source and actual renders
+        run: |
+          set -euo pipefail
+          rm -rf source_v10 output
+          mkdir -p source_v10 output/QA output/Preview output/Reference output/Review
+          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow review_aina_v10.yml --branch aina-identity-master-v1-source --status completed --limit 20 --json databaseId,conclusion --jq '[.[] | select(.conclusion=="success")][0].databaseId')"
+          test -n "$run_id"
+          echo "V10_SOURCE_RUN_ID=$run_id" >> "$GITHUB_ENV"
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name AINA-V10-REVIEW-PACKAGE --dir source_v10
+          formal="$(find source_v10 -type f -name 'AINA_VRM_CANDIDATE_V10.vrm' -print -quit)"
+          safe="$(find source_v10 -type f -name 'AINA_BLENDER_SOURCE_V10.glb' -print -quit)"
+          model_front="$(find source_v10 -type f -name 'AINA_V10_FRONT.png' -print -quit)"
+          reference_front="$(find source_v10 -type f -name 'AINA_APPROVED_FRONT.jpg' -print -quit)"
+          test -n "$formal"; test -n "$safe"; test -n "$model_front"; test -n "$reference_front"
+          cp "$formal" input_v10_formal.vrm
+          cp "$safe" input_v10_blender.glb
+          cp "$model_front" output/Preview/AINA_V10_SOURCE_FRONT.png
+          cp "$reference_front" output/Reference/AINA_APPROVED_FRONT.jpg
+          find source_v10 -type f -name 'AINA_APPROVED_3Q.jpg' -exec cp {} output/Reference/ \; || true
+          find source_v10 -type f -name 'AINA_APPROVED_SIDE.jpg' -exec cp {} output/Reference/ \; || true
+          find source_v10 -type f \( -name '*LICENSE*' -o -name 'README_中文.md' \) -exec cp {} output/ \; || true
+          stat -c '%n %s bytes' input_v10_formal.vrm input_v10_blender.glb output/Preview/AINA_V10_SOURCE_FRONT.png output/Reference/AINA_APPROVED_FRONT.jpg
+
+      - name: Measure V10 against approved front reference
+        run: |
+          set -euo pipefail
+          python tools/measure_aina_face_fixed.py \
+            output/Reference/AINA_APPROVED_FRONT.jpg \
+            output/Preview/AINA_V10_SOURCE_FRONT.png \
+            output/QA/AINA_V11_R1_PARAMETERS.json \
+            0.80 \
+            2>&1 | tee output/QA/AINA_V11_R1_MEASURE.log
+          test -s output/QA/AINA_V11_R1_PARAMETERS.json
+
+      - name: Build first closed-loop V11 candidate
+        run: |
+          set -euo pipefail
+          mkdir -p output/R1
+          python tools/build_aina_v11.py \
+            input_v10_formal.vrm \
+            input_v10_blender.glb \
+            output/QA/AINA_V11_R1_PARAMETERS.json \
+            output/R1 \
+            V11-R1 \
+            AINA_V11_R1 \
+            2>&1 | tee output/QA/AINA_V11_R1_BUILD.log
+          test -s output/R1/AINA_V11_R1.vrm
+          test -s output/R1/AINA_V11_R1_BLENDER.glb
+
+      - name: Install Blender 4.5.12 LTS and software renderer
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Render R1 and measure the remaining landmark error
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s '-screen 0 1200x800x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/render_aina_front_quick.py -- \
+            --input output/R1/AINA_V11_R1_BLENDER.glb \
+            --output output/Preview/AINA_V11_R1_FRONT.png \
+            2>&1 | tee output/QA/AINA_V11_R1_RENDER.log
+          python tools/measure_aina_face_fixed.py \
+            output/Reference/AINA_APPROVED_FRONT.jpg \
+            output/Preview/AINA_V11_R1_FRONT.png \
+            output/QA/AINA_V11_R2_PARAMETERS.json \
+            0.55 \
+            2>&1 | tee output/QA/AINA_V11_R2_MEASURE.log
+          test -s output/QA/AINA_V11_R2_PARAMETERS.json
+
+      - name: Build final V11 from the measured residual
+        run: |
+          set -euo pipefail
+          mkdir -p output/Final
+          python tools/build_aina_v11.py \
+            output/R1/AINA_V11_R1.vrm \
+            output/R1/AINA_V11_R1_BLENDER.glb \
+            output/QA/AINA_V11_R2_PARAMETERS.json \
+            output/Final \
+            V11 \
+            AINA_V11_FINAL \
+            2>&1 | tee output/QA/AINA_V11_FINAL_BUILD.log
+          cp output/Final/AINA_V11_FINAL.vrm output/AINA_VRM_CANDIDATE_V11.vrm
+          cp output/Final/AINA_V11_FINAL_BLENDER.glb output/AINA_BLENDER_SOURCE_V11.glb
+          test -s output/AINA_VRM_CANDIDATE_V11.vrm
+          test -s output/AINA_BLENDER_SOURCE_V11.glb
+
+      - name: Render final quick front and calculate objective improvement
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s '-screen 0 1200x800x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/render_aina_front_quick.py -- \
+            --input output/AINA_BLENDER_SOURCE_V11.glb \
+            --output output/Preview/AINA_V11_QUICK_FRONT.png \
+            2>&1 | tee output/QA/AINA_V11_QUICK_RENDER.log
+          python tools/measure_aina_face_fixed.py \
+            output/Reference/AINA_APPROVED_FRONT.jpg \
+            output/Preview/AINA_V11_QUICK_FRONT.png \
+            output/QA/AINA_V11_FINAL_METRICS.json \
+            1.0 \
+            2>&1 | tee output/QA/AINA_V11_FINAL_MEASURE.log
+          python - <<'PY'
+          import json, math
+          from pathlib import Path
+          initial=json.loads(Path('output/QA/AINA_V11_R1_PARAMETERS.json').read_text())
+          final=json.loads(Path('output/QA/AINA_V11_FINAL_METRICS.json').read_text())
+          ratio_errors={key:abs(math.log(max(value,1e-8))) for key,value in final['ratios'].items()}
+          report={
+              'initial_procrustes_rms':initial['procrustes_rms'],
+              'final_procrustes_rms':final['procrustes_rms'],
+              'rms_improvement':initial['procrustes_rms']-final['procrustes_rms'],
+              'rms_improvement_fraction':(initial['procrustes_rms']-final['procrustes_rms'])/max(initial['procrustes_rms'],1e-8),
+              'ratio_log_errors':ratio_errors,
+              'max_ratio_log_error':max(ratio_errors.values()),
+          }
+          report['landmark_gate']=bool(report['final_procrustes_rms'] <= report['initial_procrustes_rms'] and report['max_ratio_log_error'] <= 0.12)
+          Path('output/QA/AINA_V11_OBJECTIVE_IMPROVEMENT.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+          print(json.dumps(report,indent=2))
+          PY
+
+      - name: Produce editable V11 source and full actual render set
+        run: |
+          set +e
+          xvfb-run -a -s '-screen 0 1600x1000x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/finalize_aina_v10_fixed.py -- \
+            --input output/AINA_BLENDER_SOURCE_V11.glb \
+            --out output \
+            2>&1 | tee output/QA/AINA_V11_BLENDER_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output/QA/AINA_V11_FINALIZER_EXIT.txt
+          if [ "$code" -eq 0 ]; then
+            mv output/AINA_MASTER_V10.blend output/AINA_MASTER_V11.blend
+            mv output/AINA_EXPORT_V10.glb output/AINA_EXPORT_V11.glb
+            mv output/AINA_EXPORT_V10.fbx output/AINA_EXPORT_V11.fbx
+            for file in output/Preview/AINA_V10_*.png; do
+              [ -e "$file" ] || continue
+              mv "$file" "${file/AINA_V10_/AINA_V11_}"
+            done
+            [ ! -e output/QA/AINA_V10_BLENDER_QA.json ] || mv output/QA/AINA_V10_BLENDER_QA.json output/QA/AINA_V11_BLENDER_QA.json
+          fi
+          exit "$code"
+
+      - name: Upload V11 diagnostics immediately
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V11-CLOSED-LOOP-DIAGNOSTICS
+          path: output/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Validate formal VRM, editable source and exports
+        run: |
+          set -euo pipefail
+          test -s output/AINA_VRM_CANDIDATE_V11.vrm
+          test -s output/AINA_BLENDER_SOURCE_V11.glb
+          test -s output/AINA_MASTER_V11.blend
+          test -s output/AINA_EXPORT_V11.glb
+          test -s output/AINA_EXPORT_V11.fbx
+          for file in AINA_V11_FRONT.png AINA_V11_3Q.png AINA_V11_PROFILE.png AINA_V11_EXPR_NEUTRAL.png AINA_V11_EXPR_HAPPY.png AINA_V11_EXPR_BLINK.png AINA_V11_EXPR_AA.png AINA_V11_FULLBODY_FRONT.png
+          do
+            test -s "output/Preview/$file"
+          done
+          python - <<'PY'
+          import json,struct
+          from pathlib import Path
+          data=Path('output/AINA_VRM_CANDIDATE_V11.vrm').read_bytes();magic,version,total=struct.unpack_from('<4sII',data,0);assert magic==b'glTF' and version==2 and total==len(data)
+          offset=12;doc=None
+          while offset<total:
+              length,kind=struct.unpack_from('<II',data,offset);offset+=8;chunk=data[offset:offset+length];offset+=length
+              if kind==0x4E4F534A:doc=json.loads(chunk.decode().rstrip(' \0'))
+          vrm=doc['extensions']['VRMC_vrm'];assert vrm['specVersion']=='1.0';assert len(vrm['humanoid']['humanBones'])>=54;assert len(vrm['expressions']['preset'])>=14
+          face=next(mesh for mesh in doc['meshes'] if 'face' in mesh.get('name','').lower());assert max(len(p.get('targets',[])) for p in face['primitives'])>=57
+          print({'bytes':len(data),'bones':len(vrm['humanoid']['humanBones']),'expressions':len(vrm['expressions']['preset']),'morphs':max(len(p.get('targets',[])) for p in face['primitives'])})
+          PY
+          xvfb-run -a "$BLENDER" output/AINA_MASTER_V11.blend --background --python-exit-code 1 \
+            --python-expr "import bpy; assert any(o.type=='ARMATURE' for o in bpy.data.objects); assert max((len(o.data.shape_keys.key_blocks)-1 for o in bpy.data.objects if o.type=='MESH' and o.data.shape_keys),default=0)>=57; print('V11_BLEND_REOPEN_PASS')" \
+            | tee output/QA/AINA_V11_BLEND_REOPEN.log
+
+      - name: Compose V10-to-V11 and reference review boards
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageOps,ImageDraw
+          root=Path('output');preview=root/'Preview';ref=root/'Reference';review=root/'Review';review.mkdir(exist_ok=True)
+          def card(path,title,size=(720,720)):
+              im=ImageOps.fit(Image.open(path).convert('RGB'),size,Image.Resampling.LANCZOS);panel=Image.new('RGB',(size[0],size[1]+52),(12,18,31));panel.paste(im,(0,52));ImageDraw.Draw(panel).text((18,17),title,fill='white');return panel
+          three=Image.new('RGB',(2160,772),(7,12,22))
+          for i,(name,title) in enumerate((('AINA_V11_FRONT.png','V11 FRONT'),('AINA_V11_3Q.png','V11 3Q'),('AINA_V11_PROFILE.png','V11 PROFILE'))):three.paste(card(preview/name,title),(i*720,0))
+          three.save(review/'AINA_V11_MODEL_3VIEW.jpg',quality=94)
+          before_after=Image.new('RGB',(2160,772),(7,12,22))
+          for i,(path,title) in enumerate(((ref/'AINA_APPROVED_FRONT.jpg','APPROVED FRONT'),(preview/'AINA_V10_SOURCE_FRONT.png','V10 BEFORE'),(preview/'AINA_V11_FRONT.png','V11 CLOSED LOOP'))):before_after.paste(card(path,title),(i*720,0))
+          before_after.save(review/'AINA_V11_REFERENCE_V10_V11.jpg',quality=94)
+          expr=Image.new('RGB',(1440,1544),(7,12,22))
+          for i,(name,title) in enumerate((('AINA_V11_EXPR_NEUTRAL.png','NEUTRAL'),('AINA_V11_EXPR_HAPPY.png','HAPPY'),('AINA_V11_EXPR_BLINK.png','BLINK'),('AINA_V11_EXPR_AA.png','AA'))):expr.paste(card(preview/name,title),((i%2)*720,(i//2)*772))
+          expr.save(review/'AINA_V11_EXPRESSION_4VIEW.jpg',quality=94)
+          card(preview/'AINA_V11_FULLBODY_FRONT.png','V11 FULL BODY',(720,960)).save(review/'AINA_V11_FULLBODY.jpg',quality=94)
+          PY
+
+      - name: Record truthful V11 review state
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          objective=json.loads(Path('output/QA/AINA_V11_OBJECTIVE_IMPROVEMENT.json').read_text())
+          status={
+              'version':'V11',
+              'source_v10_run':int('${{ env.V10_SOURCE_RUN_ID }}'),
+              'technical_pipeline':'pass',
+              'vrm_1_0':'pass',
+              'humanoid_bones':54,
+              'face_morphs':57,
+              'expression_presets':14,
+              'closed_loop_passes':2,
+              'landmark_gate':objective['landmark_gate'],
+              'objective_metrics':objective,
+              'reference_similarity_pass':'pending_actual_three_view_review',
+              'identity_lock':False,
+              'visual_identity_lock':False,
+              'production_release':False,
+          }
+          Path('output/QA/AINA_V11_REVIEW_STATUS.json').write_text(json.dumps(status,indent=2),encoding='utf-8')
+          Path('output/README_V11_中文.md').write_text('# AINA V11 闭环身份审片包\n\nV11 经过两轮“实际 Blender 渲染—MediaPipe 关键点测量—拓扑与 57 个 Morph 同步变形”。包内保留 VRM 1.0、54 个 Humanoid 映射、57 个面部 Morph、14 个标准表达、Blend/GLB/FBX 和真实三视图。最终 Identity Lock 只在三视图人工通过后置为 true。\n',encoding='utf-8')
+          print(json.dumps(status,indent=2))
+          PY
+
+      - name: Package V11 complete review source
+        run: |
+          set -euo pipefail
+          rm -rf output/R1 output/Final
+          find output -type f ! -name SHA256SUMS.txt ! -name AINA_V11_CLOSED_LOOP_PACKAGE.zip -print0 | sort -z | xargs -0 sha256sum > output/SHA256SUMS.txt
+          (cd output && zip -9 -r ../AINA_V11_CLOSED_LOOP_PACKAGE.zip . >/dev/null)
+          mv AINA_V11_CLOSED_LOOP_PACKAGE.zip output/
+          sha256sum output/AINA_V11_CLOSED_LOOP_PACKAGE.zip >> output/SHA256SUMS.txt
+          find output -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
+
+      - name: Upload completed V11 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V11-CLOSED-LOOP-PACKAGE
+          path: output/**
+          if-no-files-found: error
+          retention-days: 30
