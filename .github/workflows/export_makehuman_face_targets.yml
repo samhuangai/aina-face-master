@@ -34,13 +34,16 @@ jobs:
               cp -a "makehuman-src/makehuman/data/targets/$dir" package/targets/
             fi
           done
+          mkdir -p package/targets/expression/units
+          cp -a makehuman-src/makehuman/data/targets/expression/units/asian \
+            package/targets/expression/units/
           cp makehuman-src/LICENSE.ASSETS.md package/license/
           find package -type f | sort > package/FILES.txt
           find package/targets -type f -name '*.target' | wc -l | tee package/TARGET_COUNT.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: MAKEHUMAN-CC0-FACE-TARGET-LIBRARY
+          name: MAKEHUMAN-CC0-FACE-TARGET-LIBRARY-WITH-EXPRESSIONS
           path: package/**
           if-no-files-found: error
           retention-days: 30
