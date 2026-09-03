@@ -1,0 +1,347 @@
+name: Build AINA V12 Full Landmark Field
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - tools/extract_aina_full_landmarks.py
+      - tools/build_aina_v12.py
+      - tools/build_aina_v12_oriented.py
+      - src/blender/render_aina_front_quick.py
+      - src/blender/finalize_aina_v12.py
+      - .github/workflows/review_aina_v12_fullfield.yml
+      - RUN_AINA_V12_FULLFIELD
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-v12-full-landmark-field
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python model and landmark dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install numpy==1.26.4 pillow mediapipe==0.10.21 opencv-python-headless==4.11.0.86
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zip
+
+      - name: Retrieve latest completed V11 package
+        run: |
+          set -euo pipefail
+          rm -rf source_v11 output
+          mkdir -p source_v11 output/QA output/Preview output/Reference output/Review output/Candidates output/R2
+          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow repair_publish_aina_v11.yml --branch aina-identity-master-v1-source --status completed --limit 30 --json databaseId,conclusion --jq '[.[] | select(.conclusion=="success")][0].databaseId')"
+          test -n "$run_id"
+          echo "V11_SOURCE_RUN_ID=$run_id" >> "$GITHUB_ENV"
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name AINA-V11-REPAIRED-COMPLETE-PACKAGE --dir source_v11
+          formal="$(find source_v11 -type f -name 'AINA_VRM_CANDIDATE_V11.vrm' -print -quit)"
+          safe="$(find source_v11 -type f -name 'AINA_BLENDER_SOURCE_V11.glb' -print -quit)"
+          front="$(find source_v11 -type f -name 'AINA_V11_FRONT.png' -print -quit)"
+          reference="$(find source_v11 -type f -name 'AINA_APPROVED_FRONT.jpg' -print -quit)"
+          test -n "$formal"; test -n "$safe"; test -n "$front"; test -n "$reference"
+          cp "$formal" input_v11_formal.vrm
+          cp "$safe" input_v11_blender.glb
+          cp "$front" output/Preview/SOURCE_V11_FRONT.png
+          cp "$reference" output/Reference/AINA_APPROVED_FRONT.jpg
+          find source_v11 -type f -name 'AINA_APPROVED_3Q.jpg' -exec cp {} output/Reference/ \; || true
+          find source_v11 -type f -name 'AINA_APPROVED_SIDE.jpg' -exec cp {} output/Reference/ \; || true
+          find source_v11 -type f \( -name '*LICENSE*' -o -name 'README_V11_中文.md' \) -exec cp {} output/ \; || true
+          stat -c '%n %s bytes' input_v11_formal.vrm input_v11_blender.glb output/Preview/SOURCE_V11_FRONT.png output/Reference/AINA_APPROVED_FRONT.jpg
+
+      - name: Extract all 468 aligned landmark residuals from V11
+        run: |
+          set -euo pipefail
+          python tools/extract_aina_full_landmarks.py \
+            output/Reference/AINA_APPROVED_FRONT.jpg \
+            output/Preview/SOURCE_V11_FRONT.png \
+            output/QA/AINA_V12_INITIAL_FIELD.json \
+            2>&1 | tee output/QA/AINA_V12_INITIAL_FIELD.log
+          test -s output/QA/AINA_V12_INITIAL_FIELD.json
+
+      - name: Install Blender 4.5.12 LTS and software rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Sweep camera X orientation and first-pass field strength
+        run: |
+          set -euo pipefail
+          for orientation in normal flipped; do
+            for strength in 0.30 0.55 0.78; do
+              compact="${strength/./}"
+              tag="${orientation}_${compact}"
+              stem="AINA_V12_R1_${tag}"
+              dir="output/Candidates/$tag"
+              mkdir -p "$dir"
+              python tools/build_aina_v12_oriented.py \
+                input_v11_formal.vrm input_v11_blender.glb \
+                output/QA/AINA_V12_INITIAL_FIELD.json \
+                "$dir" "V12-R1-$tag" "$stem" "$strength" "$orientation" \
+                2>&1 | tee "output/QA/${stem}_BUILD.log"
+              xvfb-run -a -s '-screen 0 1200x800x24' "$BLENDER" \
+                --background --factory-startup --python-exit-code 1 \
+                --python src/blender/render_aina_front_quick.py -- \
+                --input "$dir/${stem}_BLENDER.glb" \
+                --output "output/Preview/${stem}_FRONT.png" \
+                2>&1 | tee "output/QA/${stem}_RENDER.log"
+              python tools/extract_aina_full_landmarks.py \
+                output/Reference/AINA_APPROVED_FRONT.jpg \
+                "output/Preview/${stem}_FRONT.png" \
+                "output/QA/${stem}_FIELD.json" \
+                2>&1 | tee "output/QA/${stem}_MEASURE.log"
+            done
+          done
+
+      - name: Select best first-pass actual render
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, shutil
+          from pathlib import Path
+          qa=Path('output/QA'); candidates=Path('output/Candidates'); preview=Path('output/Preview')
+          records=[]
+          for field in sorted(qa.glob('AINA_V12_R1_*_FIELD.json')):
+              tag=field.stem.removeprefix('AINA_V12_R1_').removesuffix('_FIELD')
+              metrics=json.loads(field.read_text())
+              build=json.loads((candidates/tag/f'AINA_V12_R1_{tag}_BUILD_REPORT.json').read_text())
+              records.append({'tag':tag,'full_rms':metrics['full_rms'],'p95':metrics['p95_displacement'],'anchor_rms':metrics['anchor_rms'],'orientation':build['orientation'],'strength':build['strength']})
+          if not records: raise SystemExit('No V12 R1 candidate metrics')
+          records.sort(key=lambda item:(item['full_rms'],item['p95'],item['anchor_rms']))
+          best=records[0]
+          tag=best['tag']; stem=f'AINA_V12_R1_{tag}'; source=candidates/tag
+          selected=Path('output/R1_SELECTED'); selected.mkdir(exist_ok=True)
+          shutil.copy2(source/f'{stem}.vrm',selected/'AINA_V12_R1_SELECTED.vrm')
+          shutil.copy2(source/f'{stem}_BLENDER.glb',selected/'AINA_V12_R1_SELECTED_BLENDER.glb')
+          shutil.copy2(qa/f'{stem}_FIELD.json',selected/'AINA_V12_R1_SELECTED_FIELD.json')
+          shutil.copy2(preview/f'{stem}_FRONT.png',preview/'AINA_V12_R1_SELECTED_FRONT.png')
+          report={'baseline':json.loads((qa/'AINA_V12_INITIAL_FIELD.json').read_text())['full_rms'],'best':best,'all_candidates':records}
+          (qa/'AINA_V12_R1_SELECTION.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+          print(json.dumps(report,indent=2))
+          PY
+
+      - name: Sweep residual-field strength on the selected R1 model
+        run: |
+          set -euo pipefail
+          orientation="$(python -c "import json;print(json.load(open('output/QA/AINA_V12_R1_SELECTION.json'))['best']['orientation'])")"
+          echo "R1_ORIENTATION=$orientation" >> "$GITHUB_ENV"
+          for strength in 0.30 0.52; do
+            compact="${strength/./}"
+            tag="R2_${compact}"
+            stem="AINA_V12_${tag}"
+            dir="output/R2/$tag"
+            mkdir -p "$dir"
+            python tools/build_aina_v12_oriented.py \
+              output/R1_SELECTED/AINA_V12_R1_SELECTED.vrm \
+              output/R1_SELECTED/AINA_V12_R1_SELECTED_BLENDER.glb \
+              output/R1_SELECTED/AINA_V12_R1_SELECTED_FIELD.json \
+              "$dir" "V12-$tag" "$stem" "$strength" "$orientation" \
+              2>&1 | tee "output/QA/${stem}_BUILD.log"
+            xvfb-run -a -s '-screen 0 1200x800x24' "$BLENDER" \
+              --background --factory-startup --python-exit-code 1 \
+              --python src/blender/render_aina_front_quick.py -- \
+              --input "$dir/${stem}_BLENDER.glb" \
+              --output "output/Preview/${stem}_FRONT.png" \
+              2>&1 | tee "output/QA/${stem}_RENDER.log"
+            python tools/extract_aina_full_landmarks.py \
+              output/Reference/AINA_APPROVED_FRONT.jpg \
+              "output/Preview/${stem}_FRONT.png" \
+              "output/QA/${stem}_FIELD.json" \
+              2>&1 | tee "output/QA/${stem}_MEASURE.log"
+          done
+
+      - name: Select globally best V11, R1 or R2 geometry without regression
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, shutil
+          from pathlib import Path
+          qa=Path('output/QA'); preview=Path('output/Preview')
+          options=[]
+          initial=json.loads((qa/'AINA_V12_INITIAL_FIELD.json').read_text())
+          options.append({'stage':'V11_BASELINE','full_rms':initial['full_rms'],'p95':initial['p95_displacement'],'anchor_rms':initial['anchor_rms'],'formal':Path('input_v11_formal.vrm'),'safe':Path('input_v11_blender.glb'),'front':preview/'SOURCE_V11_FRONT.png'})
+          r1=json.loads((qa/'AINA_V12_R1_SELECTION.json').read_text())['best']
+          r1field=json.loads(Path('output/R1_SELECTED/AINA_V12_R1_SELECTED_FIELD.json').read_text())
+          options.append({'stage':'V12_R1','full_rms':r1field['full_rms'],'p95':r1field['p95_displacement'],'anchor_rms':r1field['anchor_rms'],'formal':Path('output/R1_SELECTED/AINA_V12_R1_SELECTED.vrm'),'safe':Path('output/R1_SELECTED/AINA_V12_R1_SELECTED_BLENDER.glb'),'front':preview/'AINA_V12_R1_SELECTED_FRONT.png','orientation':r1['orientation'],'strength':r1['strength']})
+          for field in sorted(qa.glob('AINA_V12_R2_*_FIELD.json')):
+              tag=field.stem.removeprefix('AINA_V12_').removesuffix('_FIELD')
+              metrics=json.loads(field.read_text())
+              directory=Path('output/R2')/tag
+              stem='AINA_V12_'+tag
+              build=json.loads((directory/f'{stem}_BUILD_REPORT.json').read_text())
+              options.append({'stage':tag,'full_rms':metrics['full_rms'],'p95':metrics['p95_displacement'],'anchor_rms':metrics['anchor_rms'],'formal':directory/f'{stem}.vrm','safe':directory/f'{stem}_BLENDER.glb','front':preview/f'{stem}_FRONT.png','orientation':build['orientation'],'strength':build['strength']})
+          options.sort(key=lambda item:(item['full_rms'],item['p95'],item['anchor_rms']))
+          best=options[0]
+          shutil.copy2(best['formal'],'output/AINA_VRM_CANDIDATE_V12.vrm')
+          shutil.copy2(best['safe'],'output/AINA_BLENDER_SOURCE_V12.glb')
+          shutil.copy2(best['front'],'output/Preview/AINA_V12_SELECTED_QUICK_FRONT.png')
+          serial=[]
+          for item in options:
+              serial.append({key:(str(value) if isinstance(value,Path) else value) for key,value in item.items()})
+          report={'selected':{key:(str(value) if isinstance(value,Path) else value) for key,value in best.items()},'all_options':serial,'baseline_full_rms':initial['full_rms'],'selected_full_rms':best['full_rms'],'improvement':initial['full_rms']-best['full_rms'],'improvement_fraction':(initial['full_rms']-best['full_rms'])/max(initial['full_rms'],1e-12),'non_regression':best['full_rms']<=initial['full_rms']+1e-12}
+          (qa/'AINA_V12_GLOBAL_SELECTION.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+          print(json.dumps(report,indent=2))
+          PY
+          test -s output/AINA_VRM_CANDIDATE_V12.vrm
+          test -s output/AINA_BLENDER_SOURCE_V12.glb
+
+      - name: Produce editable V12 source and complete actual render set
+        run: |
+          set +e
+          xvfb-run -a -s '-screen 0 1600x1000x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/finalize_aina_v12.py -- \
+            --input output/AINA_BLENDER_SOURCE_V12.glb \
+            --out output \
+            2>&1 | tee output/QA/AINA_V12_BLENDER_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output/QA/AINA_V12_FINALIZER_EXIT.txt
+          exit "$code"
+
+      - name: Upload resumable V12 diagnostics immediately
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V12-FULLFIELD-DIAGNOSTICS
+          path: output/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Measure final full render and validate production structure
+        run: |
+          set -euo pipefail
+          test -s output/AINA_MASTER_V12.blend
+          test -s output/AINA_EXPORT_V12.glb
+          test -s output/AINA_EXPORT_V12.fbx
+          test -s output/QA/AINA_V12_BLENDER_QA.json
+          for file in AINA_V12_FRONT.png AINA_V12_3Q.png AINA_V12_PROFILE.png AINA_V12_EXPR_NEUTRAL.png AINA_V12_EXPR_HAPPY.png AINA_V12_EXPR_BLINK.png AINA_V12_EXPR_AA.png AINA_V12_FULLBODY_FRONT.png; do
+            test -s "output/Preview/$file"
+          done
+          python tools/extract_aina_full_landmarks.py \
+            output/Reference/AINA_APPROVED_FRONT.jpg \
+            output/Preview/AINA_V12_FRONT.png \
+            output/QA/AINA_V12_FINAL_FULLFIELD.json \
+            2>&1 | tee output/QA/AINA_V12_FINAL_FULLFIELD.log
+          python tools/measure_aina_face_fixed.py \
+            output/Reference/AINA_APPROVED_FRONT.jpg \
+            output/Preview/AINA_V12_FRONT.png \
+            output/QA/AINA_V12_FINAL_RATIOS.json \
+            1.0 \
+            2>&1 | tee output/QA/AINA_V12_FINAL_RATIOS.log
+          python - <<'PY'
+          import json,struct
+          from pathlib import Path
+          data=Path('output/AINA_VRM_CANDIDATE_V12.vrm').read_bytes();magic,version,total=struct.unpack_from('<4sII',data,0);assert magic==b'glTF' and version==2 and total==len(data)
+          offset=12;document=None
+          while offset<total:
+              length,kind=struct.unpack_from('<II',data,offset);offset+=8;chunk=data[offset:offset+length];offset+=length
+              if kind==0x4E4F534A:document=json.loads(chunk.decode().rstrip(' \0'))
+          vrm=document['extensions']['VRMC_vrm'];assert vrm['specVersion']=='1.0';assert len(vrm['humanoid']['humanBones'])>=54;assert len(vrm['expressions']['preset'])>=14
+          face=next(mesh for mesh in document['meshes'] if 'face' in mesh.get('name','').lower());morphs=max(len(primitive.get('targets',[])) for primitive in face['primitives']);assert morphs>=57
+          print({'bytes':len(data),'bones':len(vrm['humanoid']['humanBones']),'expressions':len(vrm['expressions']['preset']),'morphs':morphs})
+          PY
+          xvfb-run -a "$BLENDER" output/AINA_MASTER_V12.blend --background --python-exit-code 1 \
+            --python-expr "import bpy; assert any(o.type=='ARMATURE' for o in bpy.data.objects); assert max((len(o.data.shape_keys.key_blocks)-1 for o in bpy.data.objects if o.type=='MESH' and o.data.shape_keys),default=0)>=57; print('V12_BLEND_REOPEN_PASS')" \
+            | tee output/QA/AINA_V12_BLEND_REOPEN.log
+          xvfb-run -a "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python-expr "import bpy; bpy.ops.import_scene.gltf(filepath='$PWD/output/AINA_EXPORT_V12.glb'); assert any(o.type=='ARMATURE' for o in bpy.data.objects); assert max((len(o.data.shape_keys.key_blocks)-1 for o in bpy.data.objects if o.type=='MESH' and o.data.shape_keys),default=0)>=57; print('V12_GLB_REIMPORT_PASS')" \
+            | tee output/QA/AINA_V12_GLB_REIMPORT.log
+
+      - name: Build reference, V11, V12 and expression review boards
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageOps,ImageDraw
+          root=Path('output');preview=root/'Preview';reference=root/'Reference';review=root/'Review';review.mkdir(exist_ok=True)
+          def card(path,title,size=(720,720)):
+              image=ImageOps.fit(Image.open(path).convert('RGB'),size,Image.Resampling.LANCZOS)
+              panel=Image.new('RGB',(size[0],size[1]+52),(12,18,31));panel.paste(image,(0,52));ImageDraw.Draw(panel).text((18,17),title,fill='white');return panel
+          three=Image.new('RGB',(2160,772),(7,12,22))
+          for i,(name,title) in enumerate((('AINA_V12_FRONT.png','V12 FRONT'),('AINA_V12_3Q.png','V12 3Q'),('AINA_V12_PROFILE.png','V12 PROFILE'))):three.paste(card(preview/name,title),(i*720,0))
+          three.save(review/'AINA_V12_MODEL_3VIEW.jpg',quality=94)
+          compare=Image.new('RGB',(2160,772),(7,12,22))
+          for i,(path,title) in enumerate(((reference/'AINA_APPROVED_FRONT.jpg','APPROVED FRONT'),(preview/'SOURCE_V11_FRONT.png','V11 BEFORE'),(preview/'AINA_V12_FRONT.png','V12 FULL FIELD'))):compare.paste(card(path,title),(i*720,0))
+          compare.save(review/'AINA_V12_REFERENCE_V11_V12.jpg',quality=94)
+          expressions=Image.new('RGB',(1440,1544),(7,12,22))
+          for i,(name,title) in enumerate((('AINA_V12_EXPR_NEUTRAL.png','NEUTRAL'),('AINA_V12_EXPR_HAPPY.png','HAPPY'),('AINA_V12_EXPR_BLINK.png','BLINK'),('AINA_V12_EXPR_AA.png','AA'))):expressions.paste(card(preview/name,title),((i%2)*720,(i//2)*772))
+          expressions.save(review/'AINA_V12_EXPRESSION_4VIEW.jpg',quality=94)
+          card(preview/'AINA_V12_FULLBODY_FRONT.png','V12 FULL BODY',(720,960)).save(review/'AINA_V12_FULLBODY.jpg',quality=94)
+          PY
+
+      - name: Record objective improvement and truthful lock state
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          qa=Path('output/QA')
+          initial=json.loads((qa/'AINA_V12_INITIAL_FIELD.json').read_text())
+          quick=json.loads((qa/'AINA_V12_GLOBAL_SELECTION.json').read_text())
+          final=json.loads((qa/'AINA_V12_FINAL_FULLFIELD.json').read_text())
+          ratios=json.loads((qa/'AINA_V12_FINAL_RATIOS.json').read_text())
+          report={
+              'version':'V12',
+              'source_v11_run':int('${{ env.V11_SOURCE_RUN_ID }}'),
+              'method':'six-candidate X-orientation/strength sweep plus two residual candidates using 468 landmarks',
+              'initial_full_rms':initial['full_rms'],
+              'selected_quick_full_rms':quick['selected_full_rms'],
+              'final_full_render_rms':final['full_rms'],
+              'quick_improvement_fraction':quick['improvement_fraction'],
+              'full_render_improvement_fraction':(initial['full_rms']-final['full_rms'])/max(initial['full_rms'],1e-12),
+              'final_p95_displacement':final['p95_displacement'],
+              'ratio_procrustes_rms':ratios['procrustes_rms'],
+              'non_regression':quick['non_regression'],
+          }
+          report['fullfield_gate']=bool(report['non_regression'] and report['full_render_improvement_fraction']>=0.03 and report['final_p95_displacement']<=initial['p95_displacement'])
+          status={'version':'V12','technical_pipeline':'pass','vrm_1_0':'pass','humanoid_bones':54,'face_morphs':57,'expression_presets':14,'fullfield_gate':report['fullfield_gate'],'objective_metrics':report,'reference_similarity_pass':'pending_actual_three_view_review','identity_lock':False,'visual_identity_lock':False,'production_release':False,'rule':'Only actual front, 3Q and profile review may set the identity locks true.'}
+          (qa/'AINA_V12_OBJECTIVE_IMPROVEMENT.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+          (qa/'AINA_V12_REVIEW_STATUS.json').write_text(json.dumps(status,indent=2),encoding='utf-8')
+          Path('output/README_V12_中文.md').write_text('# AINA V12 全脸关键点闭环审片包\n\nV12 不再只调整少量比例，而是将参考图与实际模型的 468 个面部关键点残差连续映射到 3989 点面部拓扑，并同步处理 57 个 Morph。流程同时搜索相机 X 轴方向和多档强度，再进行第二轮残差拟合。包内包含正式 VRM、可编辑 Blend、GLB/FBX、三视图、表情、全身图和完整客观报告。Identity Lock 仍只由真实三视图审核决定。\n',encoding='utf-8')
+          print(json.dumps(status,indent=2))
+          PY
+
+      - name: Remove intermediate model copies and package V12
+        run: |
+          set -euo pipefail
+          rm -rf output/Candidates output/R2 output/R1_SELECTED
+          find output -type f ! -name SHA256SUMS.txt ! -name AINA_V12_FULLFIELD_PACKAGE.zip -print0 | sort -z | xargs -0 sha256sum > output/SHA256SUMS.txt
+          (cd output && zip -9 -r ../AINA_V12_FULLFIELD_PACKAGE.zip . >/dev/null)
+          mv AINA_V12_FULLFIELD_PACKAGE.zip output/
+          sha256sum output/AINA_V12_FULLFIELD_PACKAGE.zip >> output/SHA256SUMS.txt
+          find output -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
+
+      - name: Upload completed V12 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V12-FULLFIELD-PACKAGE
+          path: output/**
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,131 @@
+name: Search AINA Local Sculpt Variants
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - tools/makehuman_target_obj.py
+      - tools/build_aina_makehuman_variants.py
+      - tools/sculpt_aina_makehuman_obj.py
+      - tools/make_aina_variant_contact_sheet.py
+      - src/blender/render_aina_makehuman_variants.py
+      - .github/workflows/build_aina_custom_sculpt_variants.yml
+      - RUN_AINA_CUSTOM_SCULPT_VARIANTS
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aina-custom-sculpt-search-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  search-custom-sculpt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - name: Checkout AINA identity code
+        uses: actions/checkout@v4
+
+      - name: Checkout official MakeHuman source and CC0 targets
+        uses: actions/checkout@v4
+        with:
+          repository: makehumancommunity/makehuman
+          ref: master
+          path: makehuman-src
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build AINA soft parametric source
+        run: |
+          set -euo pipefail
+          mkdir -p output/Parametric output/CustomVariants output/Preview output/QA
+          python tools/build_aina_makehuman_variants.py \
+            --base makehuman-src/makehuman/data/3dobjs/base.obj \
+            --target-root makehuman-src/makehuman/data/targets \
+            --out output/Parametric \
+            2>&1 | tee output/QA/AINA_CUSTOM_SOURCE_BUILD.log
+          test -s output/Parametric/02_AINA_SOFT.obj
+
+      - name: Sculpt five local AINA identity candidates
+        run: |
+          set -euo pipefail
+          python tools/sculpt_aina_makehuman_obj.py \
+            --input output/Parametric/02_AINA_SOFT.obj \
+            --out output/CustomVariants \
+            2>&1 | tee output/QA/AINA_CUSTOM_SCULPT_BUILD.log
+          test "$(find output/CustomVariants -maxdepth 1 -name '*.obj' | wc -l)" -eq 6
+          test -s output/CustomVariants/AINA_CUSTOM_SCULPT_VARIANTS.json
+
+      - name: Install Blender 4.5.12 LTS and Pillow
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6 zip
+          sudo ldconfig
+          python -m pip install --disable-pip-version-check pillow
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Render custom front, three-quarter and profile views
+        run: |
+          set +e
+          xvfb-run -a -s '-screen 0 1400x1000x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/render_aina_makehuman_variants.py -- \
+            --input-dir output/CustomVariants \
+            --out output \
+            2>&1 | tee output/QA/AINA_CUSTOM_SCULPT_BLENDER.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output/QA/AINA_CUSTOM_SCULPT_EXIT.txt
+          exit "$code"
+
+      - name: Build labeled custom-sculpt contact sheet
+        run: |
+          set -euo pipefail
+          python tools/make_aina_variant_contact_sheet.py \
+            --preview output/Preview \
+            --output output/AINA_CUSTOM_SCULPT_CONTACT_SHEET.jpg \
+            | tee output/QA/AINA_CUSTOM_SCULPT_CONTACT_SHEET.log
+          test -s output/AINA_CUSTOM_SCULPT_CONTACT_SHEET.jpg
+          test "$(find output/Preview -maxdepth 1 -name '*.png' | wc -l)" -eq 18
+
+      - name: Upload diagnostics even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-CUSTOM-SCULPT-VARIANTS-DIAGNOSTICS
+          path: output/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Package successful custom-sculpt review
+        run: |
+          set -euo pipefail
+          find output -type f ! -name SHA256SUMS.txt ! -name AINA_CUSTOM_SCULPT_VARIANTS.zip -print0 \
+            | sort -z | xargs -0 sha256sum > output/SHA256SUMS.txt
+          (cd output && zip -9 -r ../AINA_CUSTOM_SCULPT_VARIANTS.zip . >/dev/null)
+          mv AINA_CUSTOM_SCULPT_VARIANTS.zip output/
+          sha256sum output/AINA_CUSTOM_SCULPT_VARIANTS.zip >> output/SHA256SUMS.txt
+
+      - name: Upload successful custom-sculpt review
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-CUSTOM-SCULPT-VARIANTS-COMPLETE
+          path: output/**
+          if-no-files-found: error
+          retention-days: 30

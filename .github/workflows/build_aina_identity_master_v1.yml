@@ -1,0 +1,87 @@
+name: Build AINA Identity Master v1 3D Source
+
+on:
+  push:
+    branches:
+      - aina-identity-master-v1-source
+    paths:
+      - src/blender/build_aina_identity_master_v1.py
+      - .github/workflows/build_aina_identity_master_v1.yml
+      - RUN_AINA_IDENTITY_MASTER_V1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aina-identity-master-v1-source
+  cancel-in-progress: true
+
+jobs:
+  build_source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - name: Checkout source branch
+        uses: actions/checkout@v4
+
+      - name: Install Blender 4.5.12 LTS and software-rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Build editable AINA 3D identity source and preview renders
+        run: |
+          set -euo pipefail
+          mkdir -p output_aina_identity_master_v1
+          xvfb-run -a -s '-screen 0 1600x1200x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/build_aina_identity_master_v1.py -- \
+            --out output_aina_identity_master_v1 \
+            2>&1 | tee output_aina_identity_master_v1/BUILD.log
+
+      - name: Verify source deliverables
+        run: |
+          set -euo pipefail
+          test -s output_aina_identity_master_v1/AINA_IDENTITY_MASTER_v1.blend
+          test -s output_aina_identity_master_v1/AINA_IDENTITY_MASTER_v1.glb
+          test -s output_aina_identity_master_v1/AINA_IDENTITY_MASTER_v1_MANIFEST.json
+          test -s output_aina_identity_master_v1/Preview/AINA_FRONT.png
+          test -s output_aina_identity_master_v1/Preview/AINA_THREE_QUARTER.png
+          test -s output_aina_identity_master_v1/Preview/AINA_PROFILE.png
+          cp src/blender/build_aina_identity_master_v1.py \
+             output_aina_identity_master_v1/Source/build_aina_identity_master_v1_bootstrap.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('output_aina_identity_master_v1/AINA_IDENTITY_MASTER_v1_MANIFEST.json').read_text())
+          assert report['real_3d_source'] is True
+          assert report['procedural_build'] is True
+          assert report['separate_editable_objects'] is True
+          assert report['source_file'] == 'AINA_IDENTITY_MASTER_v1.blend'
+          assert report['full_vrm_rigged'] is False
+          print(json.dumps(report, indent=2))
+          PY
+          find output_aina_identity_master_v1 -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
+
+      - name: Upload AINA 3D source package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-IDENTITY-MASTER-V1-3D-SOURCE
+          path: output_aina_identity_master_v1/**
+          if-no-files-found: error
+          retention-days: 30

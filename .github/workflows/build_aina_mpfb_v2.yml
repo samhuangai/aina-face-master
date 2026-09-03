@@ -1,0 +1,77 @@
+name: Build AINA MPFB Identity Master V2
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - src/blender/refine_aina_mpfb_v2.py
+      - .github/workflows/build_aina_mpfb_v2.yml
+      - RUN_AINA_MPFB_V2
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download stable MPFB adult source
+        run: |
+          pip install requests
+          python - <<'PY'
+          import io,os,requests,zipfile,shutil
+          from pathlib import Path
+          repo=os.environ['GITHUB_REPOSITORY'];headers={'Authorization':f"Bearer {os.environ['GH_TOKEN']}",'Accept':'application/vnd.github+json'}
+          r=requests.get(f'https://api.github.com/repos/{repo}/actions/artifacts?name=AINA-MPFB-CUSTOM-HEAD-V1&per_page=100',headers=headers,timeout=60);r.raise_for_status()
+          art=max([x for x in r.json()['artifacts'] if not x['expired']],key=lambda x:x['id'])
+          z=requests.get(art['archive_download_url'],headers=headers,timeout=300,allow_redirects=True);z.raise_for_status()
+          root=Path('source_artifact');root.mkdir()
+          with zipfile.ZipFile(io.BytesIO(z.content)) as f:f.extractall(root)
+          src=next(root.rglob('AINA_MPFB_CUSTOM_HEAD_V1.blend'));Path('source').mkdir();shutil.copy2(src,'source/AINA_MPFB_CUSTOM_HEAD_V1.blend')
+          Path('source/artifact_id.txt').write_text(str(art['id']))
+          print({'artifact_id':art['id'],'blend':str(src)})
+          PY
+          test -s source/AINA_MPFB_CUSTOM_HEAD_V1.blend
+      - name: Install Blender 4.5.12 LTS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          curl -fL --retry 3 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender && tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+      - name: Build refined AINA identity source
+        run: |
+          mkdir -p output_mpfb_v2/QA
+          xvfb-run -a -s '-screen 0 1600x1200x24' "$BLENDER" --background --python-exit-code 1 --python src/blender/refine_aina_mpfb_v2.py -- --blend source/AINA_MPFB_CUSTOM_HEAD_V1.blend --out output_mpfb_v2 2>&1 | tee output_mpfb_v2/QA/BUILD.log
+      - name: Verify source and visual evidence
+        run: |
+          test -s output_mpfb_v2/AINA_MPFB_IDENTITY_MASTER_V2.blend
+          test -s output_mpfb_v2/AINA_MPFB_IDENTITY_MASTER_V2.glb
+          test -s output_mpfb_v2/Preview/AINA_MPFB_V2_FRONT.png
+          test -s output_mpfb_v2/Preview/AINA_MPFB_V2_THREE_QUARTER.png
+          test -s output_mpfb_v2/Preview/AINA_MPFB_V2_PROFILE.png
+          python - <<'PY'
+          import json
+          r=json.load(open('output_mpfb_v2/QA/AINA_MPFB_V2_REPORT.json'))
+          assert r['body_vertices']==19158
+          assert r['rig_bones']>=53
+          assert r['arkit_controls']==52 and r['arkit_nonzero']==52
+          print(json.dumps(r,indent=2))
+          PY
+          sha256sum output_mpfb_v2/AINA_MPFB_IDENTITY_MASTER_V2.* > output_mpfb_v2/QA/SHA256SUMS.txt
+          cp source/artifact_id.txt output_mpfb_v2/QA/source_artifact_id.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AINA-MPFB-IDENTITY-MASTER-V2
+          path: output_mpfb_v2/**
+          if-no-files-found: warn
+          retention-days: 30

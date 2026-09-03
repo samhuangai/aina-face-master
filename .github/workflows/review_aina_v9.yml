@@ -1,0 +1,226 @@
+name: Review AINA V9 Identity Refinement
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - tools/build_aina_v9.py
+      - src/blender/finalize_aina_v9.py
+      - .github/workflows/review_aina_v9.yml
+      - RUN_AINA_V9_REVIEW
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: review-aina-v9
+  cancel-in-progress: true
+
+jobs:
+  build-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - name: Checkout AINA V9 tools
+        uses: actions/checkout@v4
+
+      - name: Checkout the licensed VRoid topology source
+        uses: actions/checkout@v4
+        with:
+          repository: madjin/vrm-samples
+          path: vrm-samples
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python build tools
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install numpy==1.26.4 pillow
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zip
+
+      - name: Retrieve the validated V8 production source
+        run: |
+          set -euo pipefail
+          rm -rf v8_payload output
+          mkdir -p v8_payload output/QA output/Reference
+          gh run download 33317233129 \
+            --repo "$GITHUB_REPOSITORY" \
+            --name AINA-V8-PRODUCTION-SOURCE-COMPLETE \
+            --dir v8_payload
+          V8_VRM="$(find v8_payload -type f -name 'AINA_VRM_CANDIDATE_V8.vrm' -print -quit)"
+          V8_GLB="$(find v8_payload -type f -name 'AINA_BLENDER_SOURCE_V8.glb' -print -quit)"
+          test -n "$V8_VRM" && test -s "$V8_VRM"
+          test -n "$V8_GLB" && test -s "$V8_GLB"
+          cp "$V8_VRM" input_v8.vrm
+          cp "$V8_GLB" input_v8_blender.glb
+          cp vrm-samples/LICENSE output/VRM_SAMPLE_REPOSITORY_LICENSE.txt || true
+          cp vrm-samples/vroid/README.md output/VRM_SAMPLE_README.md || true
+
+      - name: Decode approved AINA multi-view references
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT.jpg.b64 > output/Reference/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > output/Reference/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > output/Reference/AINA_APPROVED_SIDE.jpg
+          test -s output/Reference/AINA_APPROVED_FRONT.jpg
+          test -s output/Reference/AINA_APPROVED_3Q.jpg
+          test -s output/Reference/AINA_APPROVED_SIDE.jpg
+
+      - name: Build formal and Blender-safe AINA V9 models
+        run: |
+          set -euo pipefail
+          python tools/build_aina_v9.py \
+            input_v8.vrm \
+            input_v8_blender.glb \
+            vrm-samples/vroid/fem_vroid.vrm \
+            output \
+            2>&1 | tee output/QA/AINA_V9_BUILD.log
+          test -s output/AINA_VRM_CANDIDATE_V9.vrm
+          test -s output/AINA_BLENDER_SOURCE_V9.glb
+          test -s output/AINA_V9_BUILD_REPORT.json
+
+      - name: Install Blender 4.5.12 LTS and software rendering runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Create editable V9 source and actual rendered review
+        run: |
+          set +e
+          xvfb-run -a -s '-screen 0 1600x1000x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/finalize_aina_v9.py -- \
+            --input output/AINA_BLENDER_SOURCE_V9.glb \
+            --out output \
+            2>&1 | tee output/QA/AINA_V9_BLENDER_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output/QA/AINA_V9_FINALIZER_EXIT.txt
+          exit "$code"
+
+      - name: Upload V9 diagnostics even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V9-REVIEW-DIAGNOSTICS
+          path: output/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Verify formal VRM, editable source and render outputs
+        run: |
+          set -euo pipefail
+          test -s output/AINA_MASTER_V9.blend
+          test -s output/AINA_EXPORT_V9.glb
+          test -s output/AINA_EXPORT_V9.fbx
+          test -s output/Preview/AINA_V9_FRONT.png
+          test -s output/Preview/AINA_V9_3Q.png
+          test -s output/Preview/AINA_V9_PROFILE.png
+          test -s output/Preview/AINA_V9_EXPR_HAPPY.png
+          test -s output/Preview/AINA_V9_FULLBODY_FRONT.png
+          test -s output/QA/AINA_V9_BLENDER_QA.json
+          python - <<'PY'
+          import json,struct
+          from pathlib import Path
+          data=Path('output/AINA_VRM_CANDIDATE_V9.vrm').read_bytes()
+          magic,version,total=struct.unpack_from('<4sII',data,0)
+          assert magic==b'glTF' and version==2 and total==len(data)
+          offset=12; document=None
+          while offset<total:
+              length,kind=struct.unpack_from('<II',data,offset); offset+=8
+              chunk=data[offset:offset+length]; offset+=length
+              if kind==0x4E4F534A:
+                  document=json.loads(chunk.decode().rstrip(' \0'))
+          vrm=document['extensions']['VRMC_vrm']
+          assert vrm['specVersion']=='1.0'
+          assert len(vrm['humanoid']['humanBones'])>=54
+          assert len(vrm['expressions']['preset'])>=14
+          assert len(document['meshes'][0]['primitives'][0].get('targets',[]))==57
+          print({'vrm_bytes':len(data),'bones':len(vrm['humanoid']['humanBones']),'expressions':len(vrm['expressions']['preset']),'morphs':57})
+          PY
+          xvfb-run -a "$BLENDER" output/AINA_MASTER_V9.blend \
+            --background --python-exit-code 1 \
+            --python-expr "import bpy; assert any(o.type=='ARMATURE' for o in bpy.data.objects); assert max((len(o.data.shape_keys.key_blocks)-1 for o in bpy.data.objects if o.type=='MESH' and o.data.shape_keys),default=0)>=57; print('AINA_V9_BLEND_REOPEN_PASS')" \
+            | tee output/QA/AINA_V9_BLEND_REOPEN.log
+
+      - name: Compose model, reference and expression review sheets
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageOps,ImageDraw
+          root=Path('output'); preview=root/'Preview'; refs=root/'Reference'
+          def fit(path,size=(640,640)):
+              return ImageOps.fit(Image.open(path).convert('RGB'),size,Image.Resampling.LANCZOS)
+          model_names=('AINA_V9_FRONT.png','AINA_V9_3Q.png','AINA_V9_PROFILE.png')
+          model=Image.new('RGB',(1920,640),(18,24,38))
+          for i,name in enumerate(model_names): model.paste(fit(preview/name),(i*640,0))
+          model.save(preview/'AINA_V9_MODEL_3VIEW.png',quality=95)
+          ref_names=('AINA_APPROVED_FRONT.jpg','AINA_APPROVED_3Q.jpg','AINA_APPROVED_SIDE.jpg')
+          compare=Image.new('RGB',(1920,1280),(18,24,38)); draw=ImageDraw.Draw(compare)
+          for i,name in enumerate(model_names): compare.paste(fit(preview/name),(i*640,0))
+          for i,name in enumerate(ref_names): compare.paste(fit(refs/name),(i*640,640))
+          draw.text((22,18),'AINA V9 ACTUAL BLENDER MODEL',fill='white')
+          draw.text((22,658),'APPROVED AINA REFERENCE',fill='white')
+          compare.save(preview/'AINA_V9_IDENTITY_COMPARE.png',quality=95)
+          labels=('NEUTRAL','HAPPY','BLINK','AA')
+          expressions=Image.new('RGB',(1280,1280),(18,24,38)); draw=ImageDraw.Draw(expressions)
+          for i,label in enumerate(labels):
+              x=(i%2)*640; y=(i//2)*640
+              expressions.paste(fit(preview/f'AINA_V9_EXPR_{label}.png'),(x,y))
+              draw.text((x+20,y+20),label,fill='white')
+          expressions.save(preview/'AINA_V9_EXPRESSION_4VIEW.png',quality=95)
+          PY
+
+      - name: Write V9 review status and package checksums
+        run: |
+          set -euo pipefail
+          cat > output/README_中文.md <<'EOF'
+          # AINA V9 人物重塑审片包
+
+          V9 修复了 V8 的白模、黑眼洞和错误方形贴图问题，恢复正确 UV 皮肤、眼白、虹膜、眉毛、眼线和嘴唇；同时重新调整额头、眼睛、鼻子、下颌、发髻和灯光。
+
+          主要文件：
+          - `AINA_VRM_CANDIDATE_V9.vrm`：正式 VRM 1.0 候选。
+          - `AINA_MASTER_V9.blend`：可编辑 Blender 源工程。
+          - `AINA_EXPORT_V9.glb` / `.fbx`：研发交换文件。
+          - `Preview/AINA_V9_IDENTITY_COMPARE.png`：实际模型与批准参考并排审片。
+          - `Preview/AINA_V9_EXPRESSION_4VIEW.png`：表情检查。
+          - `QA/`：骨骼、Morph、模型重新打开和构建日志。
+
+          结构门槛：54 个 Humanoid 映射、57 个面部 Morph、14 个 VRM 标准表达预设。人物最终锁定只依据真实三视图审核。
+          EOF
+          find output -type f ! -name SHA256SUMS.txt ! -name AINA_V9_REVIEW_PACKAGE.zip -print0 \
+            | sort -z | xargs -0 sha256sum > output/SHA256SUMS.txt
+          (cd output && zip -9 -r ../AINA_V9_REVIEW_PACKAGE.zip . >/dev/null)
+          mv AINA_V9_REVIEW_PACKAGE.zip output/
+          sha256sum output/AINA_V9_REVIEW_PACKAGE.zip >> output/SHA256SUMS.txt
+          find output -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
+
+      - name: Upload completed V9 review package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V9-REVIEW-COMPLETE
+          path: output/**
+          if-no-files-found: error
+          retention-days: 30

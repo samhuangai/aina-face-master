@@ -1,0 +1,49 @@
+name: Export MakeHuman CC0 Face Targets
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - .github/workflows/export_makehuman_face_targets.yml
+      - RUN_EXPORT_MAKEHUMAN_FACE_TARGETS
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: makehumancommunity/makehuman
+          ref: master
+          path: makehuman-src
+          fetch-depth: 1
+
+      - name: Collect the CC0 identity sculpt source library
+        run: |
+          set -euo pipefail
+          mkdir -p package/targets package/base package/license
+          cp makehuman-src/makehuman/data/3dobjs/base.obj package/base/
+          cp makehuman-src/makehuman/data/targets/macrodetails/asian-female-young.target package/base/
+          for dir in head forehead eyes eyebrows nose mouth cheek chin ears neck; do
+            if [ -d "makehuman-src/makehuman/data/targets/$dir" ]; then
+              cp -a "makehuman-src/makehuman/data/targets/$dir" package/targets/
+            fi
+          done
+          mkdir -p package/targets/expression/units
+          cp -a makehuman-src/makehuman/data/targets/expression/units/asian \
+            package/targets/expression/units/
+          cp makehuman-src/LICENSE.ASSETS.md package/license/
+          find package -type f | sort > package/FILES.txt
+          find package/targets -type f -name '*.target' | wc -l | tee package/TARGET_COUNT.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MAKEHUMAN-CC0-FACE-TARGET-LIBRARY-WITH-EXPRESSIONS
+          path: package/**
+          if-no-files-found: error
+          retention-days: 30

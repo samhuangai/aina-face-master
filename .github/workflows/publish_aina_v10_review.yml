@@ -1,0 +1,102 @@
+name: Publish Latest AINA V10 Review To Branch
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - .github/workflows/publish_aina_v10_review.yml
+      - RUN_PUBLISH_AINA_V10_REVIEW
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: publish-latest-aina-v10-review
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: aina-identity-master-v1-source
+          fetch-depth: 0
+
+      - name: Wait for latest V10 review run to finish
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 150); do
+            row="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow review_aina_v10.yml --branch aina-identity-master-v1-source --limit 1 --json databaseId,status,conclusion --jq '.[0] | [.databaseId,.status,(.conclusion // "")] | @tsv')"
+            test -n "$row"
+            run_id="$(printf '%s' "$row" | cut -f1)"
+            status="$(printf '%s' "$row" | cut -f2)"
+            conclusion="$(printf '%s' "$row" | cut -f3)"
+            echo "run=$run_id status=$status conclusion=$conclusion"
+            if [ "$status" = "completed" ]; then
+              echo "V10_RUN_ID=$run_id" >> "$GITHUB_ENV"
+              echo "V10_CONCLUSION=$conclusion" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo 'Latest V10 workflow did not finish inside the publisher window' >&2
+          exit 1
+
+      - name: Download V10 result or diagnostic artifact
+        run: |
+          set -euo pipefail
+          rm -rf incoming
+          mkdir -p incoming
+          if gh run download "$V10_RUN_ID" --repo "$GITHUB_REPOSITORY" --name AINA-V10-REVIEW-PACKAGE --dir incoming; then
+            echo 'Downloaded completed V10 package'
+          else
+            gh run download "$V10_RUN_ID" --repo "$GITHUB_REPOSITORY" --name AINA-V10-REVIEW-DIAGNOSTICS --dir incoming
+            echo 'Downloaded V10 diagnostics because completed package was unavailable'
+          fi
+          find incoming -maxdepth 3 -type f -printf '%p %s bytes\n' | sort
+
+      - name: Publish review images and QA to source branch
+        run: |
+          set -euo pipefail
+          rm -rf published/v10
+          mkdir -p published/v10/Preview published/v10/Review published/v10/QA published/v10/Reference
+          find incoming -type f -path '*/Preview/*' -exec cp {} published/v10/Preview/ \; || true
+          find incoming -type f -path '*/Review/*' -exec cp {} published/v10/Review/ \; || true
+          find incoming -type f -path '*/QA/*' -exec cp {} published/v10/QA/ \; || true
+          find incoming -type f -path '*/Reference/*' -exec cp {} published/v10/Reference/ \; || true
+          find incoming -type f -name 'AINA_V10_BUILD_REPORT.json' -exec cp {} published/v10/ \; || true
+          find incoming -type f -name 'README_中文.md' -exec cp {} published/v10/ \; || true
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path('published/v10')
+          manifest={
+              'source_run_id':os.environ['V10_RUN_ID'],
+              'source_conclusion':os.environ.get('V10_CONCLUSION',''),
+              'files':[str(path.relative_to(root)) for path in sorted(root.rglob('*')) if path.is_file()],
+          }
+          (root/'PUBLISH_MANIFEST.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+          PY
+          git config user.name 'AINA Production Bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add published/v10
+          if git diff --cached --quiet; then
+            echo 'Published V10 review already matches this run'
+          else
+            git commit -m "Publish actual AINA V10 review renders from run $V10_RUN_ID"
+            git push origin HEAD:aina-identity-master-v1-source
+          fi
+
+      - name: Upload publisher snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V10-PUBLISHED-REVIEW
+          path: published/v10/**
+          if-no-files-found: error
+          retention-days: 30

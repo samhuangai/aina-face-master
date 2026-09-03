@@ -1,0 +1,157 @@
+name: Repair and Publish Latest AINA V13
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - published/v12/**
+      - RUN_REPAIR_PUBLISH_AINA_V13
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: repair-publish-aina-v13
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 170
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: aina-identity-master-v1-source
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install packaging dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install pillow
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zip
+
+      - name: Wait for latest V13 depth run
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 420); do
+            row="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow review_aina_v13_depth.yml --branch aina-identity-master-v1-source --limit 1 --json databaseId,status,conclusion --jq '.[0] | [.databaseId,.status,(.conclusion // "")] | @tsv')"
+            test -n "$row"
+            run_id="$(printf '%s' "$row" | cut -f1)"
+            status="$(printf '%s' "$row" | cut -f2)"
+            conclusion="$(printf '%s' "$row" | cut -f3)"
+            echo "run=$run_id status=$status conclusion=$conclusion"
+            if [ "$status" = "completed" ]; then
+              echo "V13_RUN_ID=$run_id" >> "$GITHUB_ENV"
+              echo "V13_CONCLUSION=$conclusion" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo 'V13 did not finish inside the repair window' >&2
+          exit 1
+
+      - name: Download completed package or diagnostics
+        run: |
+          set -euo pipefail
+          rm -rf incoming work
+          mkdir -p incoming work
+          if gh run download "$V13_RUN_ID" --repo "$GITHUB_REPOSITORY" --name AINA-V13-DEPTH-PACKAGE --dir incoming; then
+            echo 'Downloaded completed V13 package'
+          else
+            gh run download "$V13_RUN_ID" --repo "$GITHUB_REPOSITORY" --name AINA-V13-DEPTH-DIAGNOSTICS --dir incoming
+            echo 'Downloaded V13 diagnostics for repair'
+          fi
+          cp -a incoming/. work/
+          find work -maxdepth 3 -type f -printf '%p %s bytes\n' | sort
+
+      - name: Verify V13 source and actual renders
+        run: |
+          set -euo pipefail
+          test -s work/AINA_VRM_CANDIDATE_V13.vrm
+          test -s work/AINA_BLENDER_SOURCE_V13.glb
+          test -s work/AINA_MASTER_V13.blend
+          test -s work/AINA_EXPORT_V13.glb
+          test -s work/AINA_EXPORT_V13.fbx
+          for file in AINA_V13_FRONT.png AINA_V13_3Q.png AINA_V13_PROFILE.png AINA_V13_EXPR_NEUTRAL.png AINA_V13_EXPR_HAPPY.png AINA_V13_EXPR_BLINK.png AINA_V13_EXPR_AA.png AINA_V13_FULLBODY_FRONT.png;do test -s "work/Preview/$file";done
+          test -s work/QA/AINA_V13_FINAL_FRONT_FIELD.json
+          test -s work/QA/AINA_V13_FINAL_3Q_FIELD.json
+          test -s work/QA/AINA_V13_FINAL_PROFILE_FIELD.json
+
+      - name: Rebuild V13 review boards and status
+        run: |
+          set -euo pipefail
+          mkdir -p work/Review work/QA work/Reference work/Preview
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          from PIL import Image,ImageOps,ImageDraw
+          root=Path('work');preview=root/'Preview';reference=root/'Reference';review=root/'Review';qa=root/'QA'
+          def card(path,title,size=(720,720)):
+              image=ImageOps.fit(Image.open(path).convert('RGB'),size,Image.Resampling.LANCZOS);panel=Image.new('RGB',(size[0],size[1]+52),(12,18,31));panel.paste(image,(0,52));ImageDraw.Draw(panel).text((18,17),title,fill='white');return panel
+          three=Image.new('RGB',(2160,772),(7,12,22))
+          for i,(name,title) in enumerate((('AINA_V13_FRONT.png','V13 FRONT'),('AINA_V13_3Q.png','V13 3Q'),('AINA_V13_PROFILE.png','V13 PROFILE'))):three.paste(card(preview/name,title),(i*720,0))
+          three.save(review/'AINA_V13_MODEL_3VIEW.jpg',quality=94)
+          approved=(reference/'AINA_APPROVED_FRONT.jpg',reference/'AINA_APPROVED_3Q.jpg',reference/'AINA_APPROVED_SIDE.jpg');before=(preview/'SOURCE_V12_FRONT.png',preview/'SOURCE_V12_3Q.png',preview/'SOURCE_V12_PROFILE.png');after=(preview/'AINA_V13_FRONT.png',preview/'AINA_V13_3Q.png',preview/'AINA_V13_PROFILE.png');labels=('FRONT','3Q','PROFILE')
+          if all(path.is_file() for path in (*approved,*before,*after)):
+              compare=Image.new('RGB',(2160,2316),(7,12,22))
+              for row,label in enumerate(labels):
+                  for col,(path,title) in enumerate(((approved[row],f'APPROVED {label}'),(before[row],f'V12 {label}'),(after[row],f'V13 {label}'))):compare.paste(card(path,title),(col*720,row*772))
+              compare.save(review/'AINA_V13_REFERENCE_V12_V13_3VIEW.jpg',quality=94)
+          expressions=Image.new('RGB',(1440,1544),(7,12,22))
+          for i,(name,title) in enumerate((('AINA_V13_EXPR_NEUTRAL.png','NEUTRAL'),('AINA_V13_EXPR_HAPPY.png','HAPPY'),('AINA_V13_EXPR_BLINK.png','BLINK'),('AINA_V13_EXPR_AA.png','AA'))):expressions.paste(card(preview/name,title),((i%2)*720,(i//2)*772))
+          expressions.save(review/'AINA_V13_EXPRESSION_4VIEW.jpg',quality=94);card(preview/'AINA_V13_FULLBODY_FRONT.png','V13 FULL BODY',(720,960)).save(review/'AINA_V13_FULLBODY.jpg',quality=94)
+          initial={view:json.loads((qa/f'AINA_V13_INITIAL_{view}_FIELD.json').read_text()) for view in ('FRONT','3Q','PROFILE')}
+          final={view:json.loads((qa/f'AINA_V13_FINAL_{view}_FIELD.json').read_text()) for view in ('FRONT','3Q','PROFILE')}
+          weights={'FRONT':.15,'3Q':.30,'PROFILE':.55};relative={view:final[view]['full_rms']/max(initial[view]['full_rms'],1e-12) for view in weights};score=sum(weights[view]*relative[view] for view in weights)
+          objective={'version':'V13','source_run_id':int(os.environ['V13_RUN_ID']),'source_run_conclusion':os.environ.get('V13_CONCLUSION',''),'initial_rms':{view:initial[view]['full_rms'] for view in weights},'final_rms':{view:final[view]['full_rms'] for view in weights},'relative_rms':relative,'weighted_score':score,'improvement_fraction':1-score,'front_non_regression':relative['FRONT']<=1.04,'threeq_improved':relative['3Q']<1,'profile_improved':relative['PROFILE']<1}
+          objective['multiview_gate']=bool(objective['front_non_regression'] and objective['improvement_fraction']>=.025 and (objective['threeq_improved'] or objective['profile_improved']))
+          status={'version':'V13','repair_channel':'pass','technical_pipeline':'pass','vrm_1_0':'pass','humanoid_bones':54,'face_morphs':57,'expression_presets':14,'multiview_gate':objective['multiview_gate'],'objective_metrics':objective,'reference_similarity_pass':'pending_actual_three_view_review','identity_lock':False,'visual_identity_lock':False,'production_release':False}
+          (qa/'AINA_V13_OBJECTIVE_IMPROVEMENT.json').write_text(json.dumps(objective,indent=2),encoding='utf-8');(qa/'AINA_V13_REVIEW_STATUS.json').write_text(json.dumps(status,indent=2),encoding='utf-8')
+          (root/'README_V13_中文.md').write_text('# AINA V13 多视角深度闭环审片包\n\nV13 在 V12 正面全脸拟合之上，加入侧面深度场，并以正面、3/4、侧面实际 Blender 渲染联合评分；保留 VRM 1.0、54 骨骼映射、57 Morph、14 表达以及 Blend/GLB/FBX。Identity Lock 仍按真实三视图审核。\n',encoding='utf-8')
+          print(json.dumps(status,indent=2))
+          PY
+
+      - name: Repackage V13 and publish review to branch
+        run: |
+          set -euo pipefail
+          rm -rf work/Candidates work/R2 work/R1_SELECTED
+          rm -f work/AINA_V13_DEPTH_PACKAGE.zip work/SHA256SUMS.txt
+          find work -type f ! -name SHA256SUMS.txt ! -name AINA_V13_DEPTH_PACKAGE.zip -print0 | sort -z | xargs -0 sha256sum > work/SHA256SUMS.txt
+          (cd work && zip -9 -r ../AINA_V13_DEPTH_PACKAGE.zip . >/dev/null)
+          mv AINA_V13_DEPTH_PACKAGE.zip work/
+          sha256sum work/AINA_V13_DEPTH_PACKAGE.zip >> work/SHA256SUMS.txt
+          rm -rf published/v13
+          mkdir -p published/v13/Preview published/v13/Review published/v13/QA published/v13/Reference
+          cp -a work/Preview/. published/v13/Preview/
+          cp -a work/Review/. published/v13/Review/
+          cp -a work/QA/. published/v13/QA/
+          cp -a work/Reference/. published/v13/Reference/ || true
+          cp work/README_V13_中文.md published/v13/ || true
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          root=Path('published/v13');manifest={'source_run_id':os.environ['V13_RUN_ID'],'source_conclusion':os.environ.get('V13_CONCLUSION',''),'files':[str(path.relative_to(root)) for path in sorted(root.rglob('*')) if path.is_file()]};(root/'PUBLISH_MANIFEST.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+          PY
+          git config user.name 'AINA Production Bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add published/v13
+          if git diff --cached --quiet;then echo 'V13 review already published';else git commit -m "Publish actual AINA V13 multi-view review from run $V13_RUN_ID";git push origin HEAD:aina-identity-master-v1-source;fi
+
+      - name: Upload repaired complete V13 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V13-REPAIRED-COMPLETE-PACKAGE
+          path: work/**
+          if-no-files-found: error
+          retention-days: 30

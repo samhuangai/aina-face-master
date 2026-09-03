@@ -1,0 +1,49 @@
+name: Probe VRoid AINA Base
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - src/blender/probe_vroid_base.py
+      - .github/workflows/probe_vroid_base.yml
+      - RUN_PROBE_VROID_BASE
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: madjin/vrm-samples
+          path: vrm-samples
+          fetch-depth: 1
+      - name: Prepare source
+        run: |
+          mkdir -p source
+          cp vrm-samples/vroid/fem_vroid.vrm source/fem_vroid.glb
+          test -s source/fem_vroid.glb
+      - name: Install Blender
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          curl -fL --retry 3 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+      - name: Render probe
+        run: |
+          xvfb-run -a -s '-screen 0 1600x1200x24' "$BLENDER" --background --factory-startup --python-exit-code 1 --python src/blender/probe_vroid_base.py -- --input source/fem_vroid.glb --out output_probe
+          test -s output_probe/AINA_VROID_PROBE.blend
+          test -s output_probe/Preview/AINA_PROBE_YNEG.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AINA-VROID-PROBE
+          path: output_probe/**
+          if-no-files-found: error
+          retention-days: 30

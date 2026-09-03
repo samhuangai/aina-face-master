@@ -1,0 +1,75 @@
+name: Refine AINA VRoid Identity v2
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - src/blender/refine_aina_vroid_v2.py
+      - .github/workflows/refine_aina_vroid_v2.yml
+      - RUN_REFINE_AINA_VROID_V2
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  refine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download successful v1 source artifact
+        run: |
+          python - <<'PY'
+          import io,os,zipfile,requests
+          from pathlib import Path
+          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GH_TOKEN']
+          h={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}
+          name='AINA-VROID-PRODUCTION-SOURCE-V1'
+          r=requests.get(f'https://api.github.com/repos/{repo}/actions/artifacts?name={name}&per_page=100',headers=h,timeout=60); r.raise_for_status()
+          arts=[x for x in r.json().get('artifacts',[]) if not x.get('expired')]
+          if not arts: raise SystemExit(f'No {name} artifact')
+          art=max(arts,key=lambda x:x['id'])
+          z=requests.get(art['archive_download_url'],headers=h,timeout=300,allow_redirects=True); z.raise_for_status()
+          root=Path('source_v1'); root.mkdir(exist_ok=True)
+          with zipfile.ZipFile(io.BytesIO(z.content)) as q:q.extractall(root)
+          print({'artifact_id':art['id'],'size':art['size_in_bytes']})
+          PY
+          test -s source_v1/AINA_MASTER_VROID_v1.blend
+      - name: Install Blender 4.5.12 LTS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 libxkbcommon0 libsm6 libice6
+          curl -fL --retry 3 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+      - name: Refine materials, hair and portrait presentation
+        run: |
+          xvfb-run -a -s '-screen 0 1600x1200x24' "$BLENDER" source_v1/AINA_MASTER_VROID_v1.blend --background --python-exit-code 1 --python src/blender/refine_aina_vroid_v2.py -- --out output_v2 2>&1 | tee output_v2_build.log
+          test -s output_v2/AINA_MASTER_VROID_v2.blend
+          test -s output_v2/AINA_EXPORT_VROID_v2.glb
+          test -s output_v2/Preview/AINA_V2_FRONT.png
+          test -s output_v2/Preview/AINA_V2_THREE_QUARTER.png
+          test -s output_v2/Preview/AINA_V2_PROFILE.png
+      - name: Clean reimport morph and rig audit
+        run: |
+          cat > /tmp/q.py <<'PY'
+          import bpy,sys,json
+          from pathlib import Path
+          p=Path(sys.argv[sys.argv.index('--')+1]); bpy.ops.wm.read_factory_settings(use_empty=True); bpy.ops.import_scene.gltf(filepath=str(p))
+          meshes=[o for o in bpy.context.scene.objects if o.type=='MESH']; arms=[o for o in bpy.context.scene.objects if o.type=='ARMATURE']; morphs=sum(len(o.data.shape_keys.key_blocks) for o in meshes if o.data.shape_keys)
+          r={'meshes':len(meshes),'armatures':len(arms),'morph_keys':morphs}; assert arms and morphs>=58
+          Path('output_v2/REIMPORT_QA_V2.json').write_text(json.dumps(r,indent=2)); print(r)
+          PY
+          "$BLENDER" --background --factory-startup --python-exit-code 1 --python /tmp/q.py -- output_v2/AINA_EXPORT_VROID_v2.glb
+          sha256sum output_v2/AINA_MASTER_VROID_v2.blend output_v2/AINA_EXPORT_VROID_v2.glb > output_v2/SHA256SUMS_V2.txt
+          cp output_v2_build.log output_v2/QA_BUILD_V2.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AINA-VROID-IDENTITY-V2
+          path: output_v2/**
+          if-no-files-found: error
+          retention-days: 30

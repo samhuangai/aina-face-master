@@ -1,0 +1,38 @@
+name: Fetch Orion VRM Base
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - .github/workflows/fetch_orion_base.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout VRM sample repository
+        uses: actions/checkout@v4
+        with:
+          repository: madjin/vrm-samples
+          path: samples
+          fetch-depth: 1
+          lfs: true
+      - name: Collect Orion sample
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          cp samples/Avatar_Orion.vrm output/Avatar_Orion.vrm
+          cp samples/README.md output/LICENSE_README.md
+          test -s output/Avatar_Orion.vrm
+          ls -lh output
+      - name: Upload sample
+        uses: actions/upload-artifact@v4
+        with:
+          name: ORION-VRM-BASE
+          path: output/**
+          if-no-files-found: error
+          retention-days: 7

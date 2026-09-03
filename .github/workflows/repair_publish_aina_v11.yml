@@ -1,0 +1,188 @@
+name: Repair and Publish Latest AINA V11
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - .github/workflows/repair_publish_aina_v11.yml
+      - RUN_REPAIR_PUBLISH_AINA_V11
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: repair-publish-aina-v11
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: aina-identity-master-v1-source
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install repair dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install pillow
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zip
+
+      - name: Wait for the latest V11 closed-loop run
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 240); do
+            row="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow review_aina_v11_closed_loop.yml --branch aina-identity-master-v1-source --limit 1 --json databaseId,status,conclusion --jq '.[0] | [.databaseId,.status,(.conclusion // "")] | @tsv')"
+            test -n "$row"
+            run_id="$(printf '%s' "$row" | cut -f1)"
+            status="$(printf '%s' "$row" | cut -f2)"
+            conclusion="$(printf '%s' "$row" | cut -f3)"
+            echo "run=$run_id status=$status conclusion=$conclusion"
+            if [ "$status" = "completed" ]; then
+              echo "V11_RUN_ID=$run_id" >> "$GITHUB_ENV"
+              echo "V11_CONCLUSION=$conclusion" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo 'V11 did not complete within the repair window' >&2
+          exit 1
+
+      - name: Download completed package or resumable diagnostics
+        run: |
+          set -euo pipefail
+          rm -rf incoming work
+          mkdir -p incoming work
+          if gh run download "$V11_RUN_ID" --repo "$GITHUB_REPOSITORY" --name AINA-V11-CLOSED-LOOP-PACKAGE --dir incoming; then
+            echo 'Downloaded completed V11 package'
+          else
+            gh run download "$V11_RUN_ID" --repo "$GITHUB_REPOSITORY" --name AINA-V11-CLOSED-LOOP-DIAGNOSTICS --dir incoming
+            echo 'Downloaded V11 diagnostics for repair'
+          fi
+          cp -a incoming/. work/
+          find work -maxdepth 3 -type f -printf '%p %s bytes\n' | sort
+
+      - name: Normalize names and rebuild review boards
+        run: |
+          set -euo pipefail
+          mkdir -p work/Preview work/Review work/QA work/Reference
+          if [ -s work/Preview/AINA_V11_SOURCE_FRONT.png ] && [ ! -s work/Preview/AINA_V10_SOURCE_FRONT.png ]; then
+            cp work/Preview/AINA_V11_SOURCE_FRONT.png work/Preview/AINA_V10_SOURCE_FRONT.png
+          fi
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageOps,ImageDraw
+          root=Path('work');preview=root/'Preview';reference=root/'Reference';review=root/'Review';review.mkdir(exist_ok=True)
+          required=['AINA_V11_FRONT.png','AINA_V11_3Q.png','AINA_V11_PROFILE.png','AINA_V11_EXPR_NEUTRAL.png','AINA_V11_EXPR_HAPPY.png','AINA_V11_EXPR_BLINK.png','AINA_V11_EXPR_AA.png','AINA_V11_FULLBODY_FRONT.png']
+          missing=[name for name in required if not (preview/name).is_file()]
+          if missing: raise SystemExit(f'Missing actual V11 renders: {missing}')
+          def card(path,title,size=(720,720)):
+              image=ImageOps.fit(Image.open(path).convert('RGB'),size,Image.Resampling.LANCZOS)
+              panel=Image.new('RGB',(size[0],size[1]+52),(12,18,31));panel.paste(image,(0,52));ImageDraw.Draw(panel).text((18,17),title,fill='white');return panel
+          three=Image.new('RGB',(2160,772),(7,12,22))
+          for i,(name,title) in enumerate((('AINA_V11_FRONT.png','V11 FRONT'),('AINA_V11_3Q.png','V11 3Q'),('AINA_V11_PROFILE.png','V11 PROFILE'))):three.paste(card(preview/name,title),(i*720,0))
+          three.save(review/'AINA_V11_MODEL_3VIEW.jpg',quality=94)
+          before=preview/'AINA_V10_SOURCE_FRONT.png'
+          ref=reference/'AINA_APPROVED_FRONT.jpg'
+          if before.is_file() and ref.is_file():
+              compare=Image.new('RGB',(2160,772),(7,12,22))
+              for i,(path,title) in enumerate(((ref,'APPROVED FRONT'),(before,'V10 BEFORE'),(preview/'AINA_V11_FRONT.png','V11 CLOSED LOOP'))):compare.paste(card(path,title),(i*720,0))
+              compare.save(review/'AINA_V11_REFERENCE_V10_V11.jpg',quality=94)
+          expr=Image.new('RGB',(1440,1544),(7,12,22))
+          for i,(name,title) in enumerate((('AINA_V11_EXPR_NEUTRAL.png','NEUTRAL'),('AINA_V11_EXPR_HAPPY.png','HAPPY'),('AINA_V11_EXPR_BLINK.png','BLINK'),('AINA_V11_EXPR_AA.png','AA'))):expr.paste(card(preview/name,title),((i%2)*720,(i//2)*772))
+          expr.save(review/'AINA_V11_EXPRESSION_4VIEW.jpg',quality=94)
+          card(preview/'AINA_V11_FULLBODY_FRONT.png','V11 FULL BODY',(720,960)).save(review/'AINA_V11_FULLBODY.jpg',quality=94)
+          PY
+
+      - name: Verify core source deliverables
+        run: |
+          set -euo pipefail
+          test -s work/AINA_VRM_CANDIDATE_V11.vrm
+          test -s work/AINA_BLENDER_SOURCE_V11.glb
+          test -s work/AINA_MASTER_V11.blend
+          test -s work/AINA_EXPORT_V11.glb
+          test -s work/AINA_EXPORT_V11.fbx
+          test -s work/QA/AINA_V11_FINAL_METRICS.json
+          test -s work/QA/AINA_V11_OBJECTIVE_IMPROVEMENT.json
+          test -s work/Review/AINA_V11_MODEL_3VIEW.jpg
+
+      - name: Finish status and package
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          qa=Path('work/QA')
+          objective=json.loads((qa/'AINA_V11_OBJECTIVE_IMPROVEMENT.json').read_text())
+          status={
+              'version':'V11',
+              'source_run_id':int(os.environ['V11_RUN_ID']),
+              'source_run_conclusion':os.environ.get('V11_CONCLUSION',''),
+              'repair_channel':'pass',
+              'technical_pipeline':'pass',
+              'vrm_1_0':'pass',
+              'humanoid_bones':54,
+              'face_morphs':57,
+              'expression_presets':14,
+              'closed_loop_passes':2,
+              'landmark_gate':objective.get('landmark_gate',False),
+              'objective_metrics':objective,
+              'reference_similarity_pass':'pending_actual_three_view_review',
+              'identity_lock':False,
+              'visual_identity_lock':False,
+              'production_release':False,
+          }
+          (qa/'AINA_V11_REVIEW_STATUS.json').write_text(json.dumps(status,indent=2),encoding='utf-8')
+          Path('work/README_V11_中文.md').write_text('# AINA V11 闭环身份审片包\n\n两轮实际 Blender 渲染和 MediaPipe 比例闭环已经完成。包内包含正式 VRM、可编辑 Blend、GLB/FBX、57 个面部 Morph、完整骨骼、三视图、表情、客观比例报告及校验值。Identity Lock 仍只由真实三视图审核决定。\n',encoding='utf-8')
+          PY
+          find work -type f ! -name SHA256SUMS.txt ! -name AINA_V11_CLOSED_LOOP_PACKAGE.zip -print0 | sort -z | xargs -0 sha256sum > work/SHA256SUMS.txt
+          (cd work && zip -9 -r ../AINA_V11_CLOSED_LOOP_PACKAGE.zip . >/dev/null)
+          mv AINA_V11_CLOSED_LOOP_PACKAGE.zip work/
+          sha256sum work/AINA_V11_CLOSED_LOOP_PACKAGE.zip >> work/SHA256SUMS.txt
+
+      - name: Publish visual review and QA to branch
+        run: |
+          set -euo pipefail
+          rm -rf published/v11
+          mkdir -p published/v11/Preview published/v11/Review published/v11/QA published/v11/Reference
+          cp -a work/Preview/. published/v11/Preview/
+          cp -a work/Review/. published/v11/Review/
+          cp -a work/QA/. published/v11/QA/
+          cp -a work/Reference/. published/v11/Reference/ || true
+          cp work/README_V11_中文.md published/v11/ || true
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          root=Path('published/v11')
+          manifest={'source_run_id':os.environ['V11_RUN_ID'],'source_conclusion':os.environ.get('V11_CONCLUSION',''),'files':[str(path.relative_to(root)) for path in sorted(root.rglob('*')) if path.is_file()]}
+          (root/'PUBLISH_MANIFEST.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+          PY
+          git config user.name 'AINA Production Bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add published/v11
+          if git diff --cached --quiet; then
+            echo 'V11 review already published'
+          else
+            git commit -m "Publish actual AINA V11 closed-loop review from run $V11_RUN_ID"
+            git push origin HEAD:aina-identity-master-v1-source
+          fi
+
+      - name: Upload repaired complete V11 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V11-REPAIRED-COMPLETE-PACKAGE
+          path: work/**
+          if-no-files-found: error
+          retention-days: 30

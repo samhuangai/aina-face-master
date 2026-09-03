@@ -1,0 +1,164 @@
+name: Build Clean AINA MakeHuman Baseline
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - tools/makehuman_target_obj.py
+      - src/blender/render_makehuman_clay_probe.py
+      - .github/workflows/probe_makehuman_clay.yml
+      - references/**
+      - RUN_MAKEHUMAN_CLAY_PROBE
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: makehuman-clean-baseline-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-clean-baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - name: Checkout AINA tools and approved references
+        uses: actions/checkout@v4
+
+      - name: Checkout official MakeHuman source and CC0 assets
+        uses: actions/checkout@v4
+        with:
+          repository: makehumancommunity/makehuman
+          ref: master
+          path: makehuman-src
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build clean adult Asian female OBJ
+        run: |
+          set -euo pipefail
+          mkdir -p output/Preview output/QA output/License output/Reference
+          python tools/makehuman_target_obj.py \
+            --base makehuman-src/makehuman/data/3dobjs/base.obj \
+            --target makehuman-src/makehuman/data/targets/macrodetails/asian-female-young.target:1.0 \
+            --keep-group body \
+            --keep-group helper-l-eye \
+            --keep-group helper-r-eye \
+            --keep-group helper-upper-teeth \
+            --keep-group helper-lower-teeth \
+            --keep-group helper-tongue \
+            --keep-group helper-l-eyelashes-1 \
+            --keep-group helper-r-eyelashes-1 \
+            --keep-group helper-l-eyelashes-2 \
+            --keep-group helper-r-eyelashes-2 \
+            --output output/AINA_MAKEHUMAN_CLEAN_BASE.obj \
+            --report output/QA/AINA_MAKEHUMAN_CLEAN_OBJ_REPORT.json \
+            2>&1 | tee output/QA/AINA_MAKEHUMAN_CLEAN_OBJ_BUILD.log
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('output/QA/AINA_MAKEHUMAN_CLEAN_OBJ_REPORT.json').read_text())
+          assert report['output_vertex_count'] < report['input_vertex_count']
+          assert report['output_face_count'] < report['input_face_count']
+          assert report['selected_group_face_counts']['body'] > 13000
+          forbidden = {'helper-hair', 'helper-tights', 'helper-skirt', 'helper-genital'}
+          assert forbidden.isdisjoint(report['selected_group_face_counts'])
+          PY
+          cp makehuman-src/LICENSE.ASSETS.md output/License/
+          cp makehuman-src/LICENSE.CODE.md output/License/ || true
+          python - <<'PY'
+          import base64
+          from pathlib import Path
+          destination = Path('output/Reference')
+          destination.mkdir(parents=True, exist_ok=True)
+          for source in sorted(Path('references').glob('*.jpg.b64')):
+              target = destination / source.name[:-4]
+              target.write_bytes(base64.b64decode(source.read_text(encoding='utf-8')))
+              if target.stat().st_size == 0:
+                  raise RuntimeError(f'Empty decoded reference: {target}')
+              print(target)
+          PY
+          test -s output/AINA_MAKEHUMAN_CLEAN_BASE.obj
+          test -s output/Reference/AINA_APPROVED_FRONT.jpg
+          test -s output/Reference/AINA_APPROVED_3Q.jpg
+          test -s output/Reference/AINA_APPROVED_SIDE.jpg
+
+      - name: Install Blender 4.5.12 LTS
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6 zip
+          sudo ldconfig
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Render clean clay baseline in real Blender
+        run: |
+          set +e
+          xvfb-run -a -s '-screen 0 1400x1000x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/render_makehuman_clay_probe.py -- \
+            --input output/AINA_MAKEHUMAN_CLEAN_BASE.obj \
+            --out output \
+            2>&1 | tee output/QA/AINA_MAKEHUMAN_CLEAN_BLENDER.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output/QA/AINA_MAKEHUMAN_CLEAN_EXIT.txt
+          exit "$code"
+
+      - name: Upload diagnostics even if rendering fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-MAKEHUMAN-CLEAN-BASE-DIAGNOSTICS
+          path: output/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Validate editable source, GLB and all clean views
+        run: |
+          set -euo pipefail
+          test -s output/AINA_MAKEHUMAN_CLEAN_BASE.blend
+          test -s output/AINA_MAKEHUMAN_CLEAN_BASE.glb
+          test -s output/Preview/AINA_CLEAN_FRONT.png
+          test -s output/Preview/AINA_CLEAN_FRONT_3Q_LEFT.png
+          test -s output/Preview/AINA_CLEAN_FRONT_3Q_RIGHT.png
+          test -s output/Preview/AINA_CLEAN_PROFILE_LEFT.png
+          test -s output/Preview/AINA_CLEAN_PROFILE_RIGHT.png
+          test -s output/Preview/AINA_CLEAN_BACK.png
+          test -s output/Preview/AINA_CLEAN_FULL_FRONT.png
+          test -s output/QA/AINA_MAKEHUMAN_CLEAN_BASE_REPORT.json
+          xvfb-run -a "$BLENDER" output/AINA_MAKEHUMAN_CLEAN_BASE.blend \
+            --background --python-exit-code 1 \
+            --python-expr "import bpy; meshes=[o for o in bpy.data.objects if o.type=='MESH']; assert meshes; assert sum(len(o.data.vertices) for o in meshes) < 15000; assert not any('helper' in o.name.lower() or 'joint' in o.name.lower() for o in meshes); print('AINA_MAKEHUMAN_CLEAN_BLEND_REOPEN_PASS')" \
+            | tee output/QA/AINA_MAKEHUMAN_CLEAN_REOPEN.log
+
+      - name: Package clean baseline
+        run: |
+          set -euo pipefail
+          find output -type f ! -name SHA256SUMS.txt ! -name AINA_MAKEHUMAN_CLEAN_BASELINE.zip -print0 \
+            | sort -z | xargs -0 sha256sum > output/SHA256SUMS.txt
+          (cd output && zip -9 -r ../AINA_MAKEHUMAN_CLEAN_BASELINE.zip . >/dev/null)
+          mv AINA_MAKEHUMAN_CLEAN_BASELINE.zip output/
+          sha256sum output/AINA_MAKEHUMAN_CLEAN_BASELINE.zip >> output/SHA256SUMS.txt
+
+      - name: Upload completed clean baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-MAKEHUMAN-CLEAN-BASE-COMPLETE
+          path: output/**
+          if-no-files-found: error
+          retention-days: 30
