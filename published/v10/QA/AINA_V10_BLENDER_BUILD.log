@@ -1,0 +1,133 @@
+11:24:10 | INFO: Data are loaded, start creating Blender stuff
+11:24:10 | INFO: Blender create Mesh node AINA_Updo
+11:24:10 | INFO: Blender create Mesh node AINA_Core_Collar
+11:24:10 | INFO: Blender create Mesh node Face (merged)(Clone).baked
+11:24:10 | INFO: Blender create Mesh node Body (merged).baked
+11:24:10 | INFO: glTF import finished in 0.10s
+Info: Saved as "AINA_MASTER_V10.blend"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+Info: The selection included 1 object type(s) which do not support conversion to "Mesh"
+INFO Draco mesh compression is available, use library at /home/runner/work/aina-face-master/aina-face-master/blender/4.5/scripts/addons_core/io_scene_gltf2/libextern_draco.so
+11:24:11 | INFO: Starting glTF 2.0 export
+11:24:11 | INFO: Extracting primitive: Body (merged).baked
+11:24:11 | WARNING: More than one shader node tex image used for a texture. The resulting glTF sampler will behave like the first shader node tex image.
+11:24:11 | WARNING: More than one shader node tex image used for a texture. The resulting glTF sampler will behave like the first shader node tex image.
+11:24:11 | INFO: Primitives created: 2
+11:24:11 | INFO: Extracting primitive: Face (merged)(Clone).baked
+11:24:11 | WARNING: More than one shader node tex image used for a texture. The resulting glTF sampler will behave like the first shader node tex image.
+11:24:11 | WARNING: More than one shader node tex image used for a texture. The resulting glTF sampler will behave like the first shader node tex image.
+11:24:11 | WARNING: More than one shader node tex image used for a texture. The resulting glTF sampler will behave like the first shader node tex image.
+11:24:11 | INFO: Primitives created: 7
+11:24:11 | INFO: Extracting primitive: AINA_Core_Collar
+11:24:11 | INFO: Primitives created: 2
+11:24:11 | INFO: Extracting primitive: AINA_Updo
+11:24:11 | INFO: Primitives created: 2
+11:24:11 | INFO: Extracting primitive: AINA_V10_BROW_-1
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_BROW_1
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: Sphere
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: Sphere.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: Sphere.002
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: Sphere.003
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: Sphere.004
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: Torus
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_FRINGE_0
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_FRINGE_1
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_FRINGE_2
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_FRINGE_3
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_FRINGE_4
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_FRINGE_5
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_FRINGE_6
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_FRINGE_7
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_HEADBAND
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_LASH_-1
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_LASH_1
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_LIP_LOWER
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_LIP_UPPER
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_SIDELOCK_-1
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_SIDELOCK_1
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_WISP_-1
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_WISP_1
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_LASH_-1.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_BROW_-1.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_LASH_1.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_BROW_1.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_LIP_UPPER.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_LIP_LOWER.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_HEADBAND.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_FRINGE_0.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_FRINGE_1.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_FRINGE_2.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_FRINGE_3.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_FRINGE_4.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_FRINGE_5.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_FRINGE_6.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_FRINGE_7.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_SIDELOCK_-1.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_WISP_-1.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_SIDELOCK_1.001
+11:24:11 | INFO: Primitives created: 1
+11:24:11 | INFO: Extracting primitive: AINA_V10_WISP_1.001
+11:24:11 | INFO: Primitives created: 1
+11:24:12 | INFO: Finished glTF 2.0 export in 1.040358543395996 s
+Blender 4.5.12 LTS (hash 84afd5f785f7 built 2026-07-21 01:31:22)
+Fra:1 Mem:127.23M (Peak 142.19M) | Time:00:46.48 | Rendering 1 / 64 samples
+Fra:1 Mem:127.23M (Peak 142.19M) | Time:01:00.71 | Rendering 25 / 64 samples

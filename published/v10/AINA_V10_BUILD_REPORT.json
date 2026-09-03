@@ -1,0 +1,464 @@
+{
+  "version": "V10",
+  "formal": {
+    "output": "AINA_VRM_CANDIDATE_V10.vrm",
+    "bytes": 10548304,
+    "geometry": {
+      "face_vertices": 3989,
+      "morph_targets": 57,
+      "eye_anchor": 1.4290268380066444,
+      "mouth_anchor_old": 1.3750571807225545,
+      "mouth_anchor_new": 1.3453738692163049,
+      "new_min": [
+        -0.07657148118516033,
+        1.3065365237751225,
+        -0.08326650321394961
+      ],
+      "new_max": [
+        0.07657148680727296,
+        1.5103263123282071,
+        0.043518638238310814
+      ]
+    },
+    "updo": {
+      "found": true,
+      "vertices": 2434
+    },
+    "materials": {
+      "N00_000_00_FaceMouth_00_FACE (Instance)": {
+        "baseColorFactor": [
+          0.92,
+          0.78,
+          0.8,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "OPAQUE"
+      },
+      "N00_000_00_EyeIris_00_EYE (Instance)": {
+        "baseColorFactor": [
+          0.62,
+          0.7,
+          0.86,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "BLEND"
+      },
+      "N00_000_00_EyeHighlight_00_EYE (Instance)": {
+        "baseColorFactor": [
+          0.72,
+          0.78,
+          0.88,
+          0.3
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "BLEND"
+      },
+      "N00_000_00_Face_00_SKIN (Instance)": {
+        "baseColorFactor": [
+          0.74,
+          0.69,
+          0.68,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "OPAQUE"
+      },
+      "N00_000_00_EyeWhite_00_EYE (Instance)": {
+        "baseColorFactor": [
+          0.67,
+          0.71,
+          0.79,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "OPAQUE"
+      },
+      "N00_000_00_FaceBrow_00_FACE (Instance)": {
+        "baseColorFactor": [
+          0.56,
+          0.48,
+          0.5,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "BLEND"
+      },
+      "N00_000_00_FaceEyeline_00_FACE (Instance)": {
+        "baseColorFactor": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "BLEND"
+      },
+      "N00_000_00_Body_00_SKIN (Instance)": {
+        "baseColorFactor": [
+          0.72,
+          0.69,
+          0.72,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "MASK"
+      },
+      "N00_000_00_HairBack_00_HAIR (Instance)": {
+        "baseColorFactor": [
+          0.43,
+          0.47,
+          0.6,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "MASK"
+      },
+      "AINA_Silver_Updo": {
+        "baseColorFactor": [
+          0.42,
+          0.46,
+          0.6,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": null
+      },
+      "AINA_Hairpins": {
+        "baseColorFactor": [
+          0.22,
+          0.28,
+          0.44,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": null
+      },
+      "AINA_Core": {
+        "baseColorFactor": [
+          0.018,
+          0.2,
+          0.8,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.02,
+          0.28,
+          1.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": null
+      },
+      "AINA_Uniform": {
+        "baseColorFactor": [
+          0.64,
+          0.67,
+          0.77,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": null
+      }
+    }
+  },
+  "blender": {
+    "output": "AINA_BLENDER_SOURCE_V10.glb",
+    "bytes": 10525440,
+    "geometry": {
+      "face_vertices": 3989,
+      "morph_targets": 57,
+      "eye_anchor": 1.4290268380066444,
+      "mouth_anchor_old": 1.3750571807225545,
+      "mouth_anchor_new": 1.3453738692163049,
+      "new_min": [
+        -0.07657148118516033,
+        1.3065365237751225,
+        -0.08326650321394961
+      ],
+      "new_max": [
+        0.07657148680727296,
+        1.5103263123282071,
+        0.043518638238310814
+      ]
+    },
+    "updo": {
+      "found": true,
+      "vertices": 2434
+    },
+    "materials": {
+      "N00_000_00_FaceMouth_00_FACE (Instance)": {
+        "baseColorFactor": [
+          0.92,
+          0.78,
+          0.8,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "OPAQUE"
+      },
+      "N00_000_00_EyeIris_00_EYE (Instance)": {
+        "baseColorFactor": [
+          0.62,
+          0.7,
+          0.86,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "BLEND"
+      },
+      "N00_000_00_EyeHighlight_00_EYE (Instance)": {
+        "baseColorFactor": [
+          0.72,
+          0.78,
+          0.88,
+          0.3
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "BLEND"
+      },
+      "N00_000_00_Face_00_SKIN (Instance)": {
+        "baseColorFactor": [
+          0.74,
+          0.69,
+          0.68,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "OPAQUE"
+      },
+      "N00_000_00_EyeWhite_00_EYE (Instance)": {
+        "baseColorFactor": [
+          0.67,
+          0.71,
+          0.79,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "OPAQUE"
+      },
+      "N00_000_00_FaceBrow_00_FACE (Instance)": {
+        "baseColorFactor": [
+          0.56,
+          0.48,
+          0.5,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "BLEND"
+      },
+      "N00_000_00_FaceEyeline_00_FACE (Instance)": {
+        "baseColorFactor": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "BLEND"
+      },
+      "N00_000_00_Body_00_SKIN (Instance)": {
+        "baseColorFactor": [
+          0.72,
+          0.69,
+          0.72,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "MASK"
+      },
+      "N00_000_00_HairBack_00_HAIR (Instance)": {
+        "baseColorFactor": [
+          0.43,
+          0.47,
+          0.6,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": "MASK"
+      },
+      "AINA_Silver_Updo": {
+        "baseColorFactor": [
+          0.42,
+          0.46,
+          0.6,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": null
+      },
+      "AINA_Hairpins": {
+        "baseColorFactor": [
+          0.22,
+          0.28,
+          0.44,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": null
+      },
+      "AINA_Core": {
+        "baseColorFactor": [
+          0.018,
+          0.2,
+          0.8,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.02,
+          0.28,
+          1.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": null
+      },
+      "AINA_Uniform": {
+        "baseColorFactor": [
+          0.64,
+          0.67,
+          0.77,
+          1.0
+        ],
+        "emissiveFactor": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "hasEmissiveTexture": false,
+        "alphaMode": null
+      }
+    }
+  },
+  "structural_requirements": {
+    "vrm1": true,
+    "humanoid_bones": 54,
+    "face_morphs": 57,
+    "expression_presets": 14
+  },
+  "visual_changes": [
+    "all non-core emissive channels removed",
+    "forehead compressed and lower face lengthened",
+    "eye opening reduced and eyes moved inward",
+    "lower jaw tapered",
+    "nose bridge and tip rebalanced",
+    "existing black eyeline layer hidden",
+    "hair and uniform response darkened"
+  ],
+  "identity_lock": false,
+  "visual_identity_lock": false
+}
