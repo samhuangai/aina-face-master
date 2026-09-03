@@ -1,0 +1,129 @@
+name: Review AINA V10 Fixed Portrait Pass
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - tools/build_aina_v10.py
+      - src/blender/finalize_aina_v10.py
+      - src/blender/run_aina_v10_fixed.py
+      - .github/workflows/review_aina_v10_fixed.yml
+      - RUN_AINA_V10_FIXED
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: review-aina-v10
+  cancel-in-progress: true
+
+jobs:
+  review-fixed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install V10 build tools and retrieve V9 sources
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install numpy==1.26.4 pillow
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zip
+          rm -rf v9_payload output
+          mkdir -p v9_payload output/QA
+          gh run download 33747168095 \
+            --repo "$GITHUB_REPOSITORY" \
+            --name AINA-V9-REVIEW-DIAGNOSTICS \
+            --dir v9_payload
+          V9_VRM="$(find v9_payload -type f -name 'AINA_VRM_CANDIDATE_V9.vrm' -print -quit)"
+          V9_GLB="$(find v9_payload -type f -name 'AINA_BLENDER_SOURCE_V9.glb' -print -quit)"
+          test -n "$V9_VRM" && test -s "$V9_VRM"
+          test -n "$V9_GLB" && test -s "$V9_GLB"
+          python tools/build_aina_v10.py "$V9_VRM" "$V9_GLB" output \
+            2>&1 | tee output/QA/AINA_V10_BUILD.log
+          test -s output/AINA_VRM_CANDIDATE_V10.vrm
+          test -s output/AINA_BLENDER_SOURCE_V10.glb
+
+      - name: Install Blender 4.5.12 LTS
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Build corrected editable source and actual portrait views
+        run: |
+          set +e
+          xvfb-run -a -s '-screen 0 1400x1000x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/run_aina_v10_fixed.py -- \
+            --input output/AINA_BLENDER_SOURCE_V10.glb \
+            --out output \
+            2>&1 | tee output/QA/AINA_V10_FIXED_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output/QA/AINA_V10_FIXED_EXIT.txt
+          exit "$code"
+
+      - name: Upload corrected V10 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V10-FIXED-DIAGNOSTICS
+          path: output/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Verify and compose actual three-view sheet
+        run: |
+          set -euo pipefail
+          test -s output/AINA_MASTER_V10.blend
+          test -s output/AINA_EXPORT_V10.glb
+          test -s output/AINA_EXPORT_V10.fbx
+          test -s output/Preview/AINA_V10_FRONT.png
+          test -s output/Preview/AINA_V10_3Q.png
+          test -s output/Preview/AINA_V10_PROFILE.png
+          test -s output/QA/AINA_V10_BLENDER_QA.json
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageOps,ImageDraw
+          preview=Path('output/Preview')
+          names=('AINA_V10_FRONT.png','AINA_V10_3Q.png','AINA_V10_PROFILE.png')
+          sheet=Image.new('RGB',(1260,520),(30,36,49)); draw=ImageDraw.Draw(sheet)
+          for i,name in enumerate(names):
+              image=ImageOps.fit(Image.open(preview/name).convert('RGB'),(420,520),Image.Resampling.LANCZOS)
+              sheet.paste(image,(i*420,0))
+          draw.text((18,16),'AINA V10 FIXED ACTUAL BLENDER THREE-VIEW',fill='white')
+          sheet.save(preview/'AINA_V10_3VIEW.png',quality=95)
+          PY
+          xvfb-run -a "$BLENDER" output/AINA_MASTER_V10.blend \
+            --background --python-exit-code 1 \
+            --python-expr "import bpy; assert any(o.type=='ARMATURE' for o in bpy.data.objects); assert max((len(o.data.shape_keys.key_blocks)-1 for o in bpy.data.objects if o.type=='MESH' and o.data.shape_keys),default=0)>=57; print('AINA_V10_FIXED_REOPEN_PASS')" \
+            | tee output/QA/AINA_V10_FIXED_REOPEN.log
+
+      - name: Upload completed fixed V10 review
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V10-FIXED-COMPLETE
+          path: output/**
+          if-no-files-found: error
+          retention-days: 30
