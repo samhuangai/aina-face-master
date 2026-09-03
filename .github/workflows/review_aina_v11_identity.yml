@@ -1,0 +1,218 @@
+name: Review AINA V11 Identity Reconstruction
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - src/blender/refine_aina_v11_identity.py
+      - .github/workflows/review_aina_v11_identity.yml
+      - RUN_AINA_V11_REVIEW
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-v11-identity-review
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - name: Checkout AINA V11 tools
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install review packaging tools
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install pillow
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends unzip zip
+
+      - name: Retrieve validated V10 editable source
+        run: |
+          set -euo pipefail
+          rm -rf downloaded input output
+          mkdir -p downloaded input output/QA output/Preview output/Reference
+          gh run download 33749570835 \
+            --repo "$GITHUB_REPOSITORY" \
+            --name AINA-V10-FIXED-COMPLETE \
+            --dir downloaded
+          direct=$(find downloaded -type f -name 'AINA_MASTER_V10.blend' -print -quit)
+          if [ -n "$direct" ]; then
+            cp -a "$(dirname "$direct")"/. input/
+          else
+            nested=$(find downloaded -type f -name 'AINA_V10_FIXED_SOURCE.zip' -print -quit)
+            test -n "$nested"
+            unzip -q "$nested" -d input
+          fi
+          test -s input/AINA_MASTER_V10.blend
+          test -s input/AINA_VRM_CANDIDATE_V10.vrm
+          cp input/AINA_VRM_CANDIDATE_V10.vrm output/AINA_VRM_BASE_V10.vrm
+
+      - name: Decode approved AINA references
+        run: |
+          set -euo pipefail
+          base64 -d references/AINA_APPROVED_FRONT.jpg.b64 > output/Reference/AINA_APPROVED_FRONT.jpg
+          base64 -d references/AINA_APPROVED_3Q.jpg.b64 > output/Reference/AINA_APPROVED_3Q.jpg
+          base64 -d references/AINA_APPROVED_SIDE.jpg.b64 > output/Reference/AINA_APPROVED_SIDE.jpg
+          test -s output/Reference/AINA_APPROVED_FRONT.jpg
+          test -s output/Reference/AINA_APPROVED_3Q.jpg
+          test -s output/Reference/AINA_APPROVED_SIDE.jpg
+
+      - name: Install Blender 4.5.12 LTS and software renderer
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Reconstruct adult face, eyes, lips and ribbon hair
+        run: |
+          set +e
+          xvfb-run -a -s '-screen 0 1600x1000x24' "$BLENDER" \
+            input/AINA_MASTER_V10.blend \
+            --background --python-exit-code 1 \
+            --python src/blender/refine_aina_v11_identity.py -- \
+            --out output \
+            2>&1 | tee output/QA/AINA_V11_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output/QA/AINA_V11_EXIT.txt
+          exit "$code"
+
+      - name: Upload V11 diagnostics even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V11-IDENTITY-DIAGNOSTICS
+          path: output/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Verify editable source and rendered views
+        run: |
+          set -euo pipefail
+          test -s output/AINA_MASTER_V11_REVIEW.blend
+          test -s output/AINA_EXPORT_V11_REVIEW.glb
+          test -s output/AINA_EXPORT_V11_REVIEW.fbx
+          test -s output/Preview/AINA_V11_FRONT.png
+          test -s output/Preview/AINA_V11_3Q.png
+          test -s output/Preview/AINA_V11_PROFILE.png
+          test -s output/Preview/AINA_V11_FULLBODY.png
+          test -s output/QA/AINA_V11_REVIEW_QA.json
+          xvfb-run -a "$BLENDER" output/AINA_MASTER_V11_REVIEW.blend \
+            --background --python-exit-code 1 \
+            --python-expr "import bpy; assert any(o.type=='ARMATURE' for o in bpy.data.objects); assert any(o.name.startswith('AINA_V11_EYE_SOCKET_PATCH') for o in bpy.data.objects); assert any(o.name.startswith('AINA_V11_FRINGE') for o in bpy.data.objects); print('V11_BLEND_REOPEN_PASS')" \
+            | tee output/QA/AINA_V11_BLEND_REOPEN.log
+          xvfb-run -a "$BLENDER" --background --factory-startup --python-exit-code 1 \
+            --python-expr "import bpy; bpy.ops.import_scene.gltf(filepath='$PWD/output/AINA_EXPORT_V11_REVIEW.glb'); assert any(o.type=='ARMATURE' for o in bpy.data.objects); assert any(o.name.startswith('AINA_V11_EYE_SOCKET_PATCH') for o in bpy.data.objects); print('V11_GLB_REIMPORT_PASS',len(bpy.data.objects))" \
+            | tee output/QA/AINA_V11_GLB_REIMPORT.log
+
+      - name: Compose model and reference review boards
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageOps, ImageDraw, ImageFont
+
+          root=Path('output')
+          preview=root/'Preview'
+          reference=root/'Reference'
+          font=ImageFont.load_default()
+
+          def panel(path, size=(600,720), label=''):
+              image=Image.open(path).convert('RGB')
+              image=ImageOps.fit(image,size,Image.Resampling.LANCZOS,centering=(0.5,0.46))
+              canvas=Image.new('RGB',(size[0],size[1]+38),(15,20,32))
+              canvas.paste(image,(0,38))
+              ImageDraw.Draw(canvas).text((16,12),label,fill=(240,244,255),font=font)
+              return canvas
+
+          model_names=(
+              ('AINA_V11_FRONT.png','V11 MODEL — FRONT'),
+              ('AINA_V11_3Q.png','V11 MODEL — 3/4'),
+              ('AINA_V11_PROFILE.png','V11 MODEL — PROFILE'),
+          )
+          ref_names=(
+              ('AINA_APPROVED_FRONT.jpg','APPROVED — FRONT'),
+              ('AINA_APPROVED_3Q.jpg','APPROVED — 3/4'),
+              ('AINA_APPROVED_SIDE.jpg','APPROVED — PROFILE'),
+          )
+          model=[panel(preview/name,label=label) for name,label in model_names]
+          refs=[panel(reference/name,label=label) for name,label in ref_names]
+          three=Image.new('RGB',(1800,758),(15,20,32))
+          for i,image in enumerate(model): three.paste(image,(i*600,0))
+          three.save(preview/'AINA_V11_3VIEW.png',quality=95)
+          compare=Image.new('RGB',(1800,1516),(15,20,32))
+          for i,image in enumerate(model): compare.paste(image,(i*600,0))
+          for i,image in enumerate(refs): compare.paste(image,(i*600,758))
+          compare.save(preview/'AINA_V11_VS_APPROVED.png',quality=95)
+          PY
+          test -s output/Preview/AINA_V11_3VIEW.png
+          test -s output/Preview/AINA_V11_VS_APPROVED.png
+
+      - name: Write review status and package deliverables
+        run: |
+          set -euo pipefail
+          cat > output/AINA_V11_REVIEW_STATUS.json <<'JSON'
+          {
+            "version": "V11",
+            "editable_blend": true,
+            "glb_export": true,
+            "fbx_export": true,
+            "formal_vrm_base_preserved": true,
+            "actual_three_view_rendered": true,
+            "eye_socket_reconstructed": true,
+            "ribbon_hair_reconstructed": true,
+            "identity_lock": false,
+            "visual_identity_lock": false,
+            "note": "Identity lock remains false until the actual V11 model-versus-approved board is manually reviewed."
+          }
+          JSON
+          cat > output/README_中文.md <<'MD'
+          # AINA V11 人物相似度审片包
+
+          本包从已经通过骨骼、Morph、VRM 和可编辑源文件检查的 V10 工程继续重建。V11 重点解决旧动漫眼眶暴露、黑色眼袋、过高额头、幼态脸型、过小鼻口及细线尖刺前发。
+
+          - `AINA_MASTER_V11_REVIEW.blend`：可编辑审片主工程。
+          - `AINA_EXPORT_V11_REVIEW.glb/.fbx`：交换文件。
+          - `AINA_VRM_BASE_V10.vrm`：保留的正式 VRM 运行基线，暂不冒充 V11 最终 VRM。
+          - `Preview/AINA_V11_VS_APPROVED.png`：V11 模型与批准效果图的正面、3/4、侧面对照。
+          - `QA/`：重新打开、重新导入和结构报告。
+
+          只有对照板通过人物审核后，才会把 V11 的新增眼睛、嘴唇和片状银发烘焙进最终 VRM，并设置 Identity Lock。
+          MD
+          find output -type f ! -name SHA256SUMS.txt ! -name AINA_V11_IDENTITY_REVIEW.zip -print0 \
+            | sort -z | xargs -0 sha256sum > output/SHA256SUMS.txt
+          (cd output && zip -9 -r ../AINA_V11_IDENTITY_REVIEW.zip . >/dev/null)
+          mv AINA_V11_IDENTITY_REVIEW.zip output/
+          sha256sum output/AINA_V11_IDENTITY_REVIEW.zip >> output/SHA256SUMS.txt
+          find output -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
+
+      - name: Upload completed AINA V11 identity review
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V11-IDENTITY-REVIEW-COMPLETE
+          path: output/**
+          if-no-files-found: error
+          retention-days: 30
