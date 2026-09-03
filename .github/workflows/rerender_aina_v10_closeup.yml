@@ -1,0 +1,111 @@
+name: Rerender AINA V10 Closeup Review
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - src/blender/rerender_aina_v10_closeup.py
+      - .github/workflows/rerender_aina_v10_closeup.yml
+      - RUN_AINA_V10_CLOSEUP
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-v10-closeup
+  cancel-in-progress: true
+
+jobs:
+  closeup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Retrieve successful V10 editable source
+        run: |
+          set -euo pipefail
+          rm -rf payload output
+          mkdir -p payload output/QA
+          gh run download 33749570835 \
+            --repo "$GITHUB_REPOSITORY" \
+            --name AINA-V10-FIXED-COMPLETE \
+            --dir payload
+          BLEND="$(find payload -type f -name 'AINA_MASTER_V10.blend' -print -quit)"
+          test -n "$BLEND" && test -s "$BLEND"
+          cp "$BLEND" output/AINA_MASTER_V10.blend
+
+      - name: Install Blender 4.5.12 LTS
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 \
+            https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz \
+            -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Render deterministic close-up front, three-quarter and profile
+        run: |
+          set +e
+          xvfb-run -a -s '-screen 0 1500x1100x24' "$BLENDER" \
+            output/AINA_MASTER_V10.blend \
+            --background --python-exit-code 1 \
+            --python src/blender/rerender_aina_v10_closeup.py -- \
+            --out output \
+            2>&1 | tee output/QA/AINA_V10_CLOSEUP_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output/QA/AINA_V10_CLOSEUP_EXIT.txt
+          exit "$code"
+
+      - name: Upload close-up diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V10-CLOSEUP-DIAGNOSTICS
+          path: output/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Compose close-up three-view sheet
+        run: |
+          set -euo pipefail
+          test -s output/PreviewCloseup/AINA_V10_CLOSE_FRONT.png
+          test -s output/PreviewCloseup/AINA_V10_CLOSE_3Q.png
+          test -s output/PreviewCloseup/AINA_V10_CLOSE_PROFILE.png
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageOps,ImageDraw
+          p=Path('output/PreviewCloseup')
+          names=('AINA_V10_CLOSE_FRONT.png','AINA_V10_CLOSE_3Q.png','AINA_V10_CLOSE_PROFILE.png')
+          sheet=Image.new('RGB',(1920,760),(30,36,49)); draw=ImageDraw.Draw(sheet)
+          for i,name in enumerate(names):
+              image=ImageOps.fit(Image.open(p/name).convert('RGB'),(640,760),Image.Resampling.LANCZOS)
+              sheet.paste(image,(i*640,0))
+          draw.text((20,18),'AINA V10 ACTUAL CLOSE-UP THREE-VIEW',fill='white')
+          sheet.save(p/'AINA_V10_CLOSE_3VIEW.png',quality=95)
+          PY
+
+      - name: Upload completed close-up review
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V10-CLOSEUP-COMPLETE
+          path: output/**
+          if-no-files-found: error
+          retention-days: 30
