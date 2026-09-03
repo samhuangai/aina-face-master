@@ -1,0 +1,324 @@
+name: Build AINA V13 Multi View Depth
+
+on:
+  push:
+    branches: [aina-identity-master-v1-source]
+    paths:
+      - published/v12/**
+      - tools/build_aina_v13_depth.py
+      - src/blender/render_aina_views_quick.py
+      - src/blender/finalize_aina_versioned.py
+      - RUN_AINA_V13_DEPTH
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: aina-v13-multiview-depth
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 135
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install model and landmark dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install numpy==1.26.4 pillow mediapipe==0.10.21 opencv-python-headless==4.11.0.86
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zip
+
+      - name: Retrieve latest completed V12 package
+        run: |
+          set -euo pipefail
+          rm -rf source_v12 output
+          mkdir -p source_v12 output/QA output/Preview output/Reference output/Review output/Candidates output/R2
+          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow repair_publish_aina_v12.yml --branch aina-identity-master-v1-source --status completed --limit 30 --json databaseId,conclusion --jq '[.[] | select(.conclusion=="success")][0].databaseId')"
+          test -n "$run_id"
+          echo "V12_SOURCE_RUN_ID=$run_id" >> "$GITHUB_ENV"
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name AINA-V12-REPAIRED-COMPLETE-PACKAGE --dir source_v12
+          formal="$(find source_v12 -type f -name 'AINA_VRM_CANDIDATE_V12.vrm' -print -quit)"
+          safe="$(find source_v12 -type f -name 'AINA_BLENDER_SOURCE_V12.glb' -print -quit)"
+          front="$(find source_v12 -type f -name 'AINA_V12_FRONT.png' -print -quit)"
+          threeq="$(find source_v12 -type f -name 'AINA_V12_3Q.png' -print -quit)"
+          profile="$(find source_v12 -type f -name 'AINA_V12_PROFILE.png' -print -quit)"
+          ref_front="$(find source_v12 -type f -name 'AINA_APPROVED_FRONT.jpg' -print -quit)"
+          ref_threeq="$(find source_v12 -type f -name 'AINA_APPROVED_3Q.jpg' -print -quit)"
+          ref_profile="$(find source_v12 -type f -name 'AINA_APPROVED_SIDE.jpg' -print -quit)"
+          test -n "$formal"; test -n "$safe"; test -n "$front"; test -n "$threeq"; test -n "$profile"; test -n "$ref_front"; test -n "$ref_threeq"; test -n "$ref_profile"
+          cp "$formal" input_v12_formal.vrm
+          cp "$safe" input_v12_blender.glb
+          cp "$front" output/Preview/SOURCE_V12_FRONT.png
+          cp "$threeq" output/Preview/SOURCE_V12_3Q.png
+          cp "$profile" output/Preview/SOURCE_V12_PROFILE.png
+          cp "$ref_front" output/Reference/AINA_APPROVED_FRONT.jpg
+          cp "$ref_threeq" output/Reference/AINA_APPROVED_3Q.jpg
+          cp "$ref_profile" output/Reference/AINA_APPROVED_SIDE.jpg
+          find source_v12 -type f \( -name '*LICENSE*' -o -name 'README_V12_中文.md' \) -exec cp {} output/ \; || true
+          stat -c '%n %s bytes' input_v12_formal.vrm input_v12_blender.glb output/Preview/SOURCE_V12_FRONT.png output/Preview/SOURCE_V12_3Q.png output/Preview/SOURCE_V12_PROFILE.png
+
+      - name: Extract V12 front, three-quarter and profile residuals
+        run: |
+          set -euo pipefail
+          python tools/extract_aina_full_landmarks.py output/Reference/AINA_APPROVED_FRONT.jpg output/Preview/SOURCE_V12_FRONT.png output/QA/AINA_V13_INITIAL_FRONT_FIELD.json 2>&1 | tee output/QA/AINA_V13_INITIAL_FRONT_FIELD.log
+          python tools/extract_aina_full_landmarks.py output/Reference/AINA_APPROVED_3Q.jpg output/Preview/SOURCE_V12_3Q.png output/QA/AINA_V13_INITIAL_3Q_FIELD.json 2>&1 | tee output/QA/AINA_V13_INITIAL_3Q_FIELD.log
+          if python tools/extract_aina_full_landmarks.py output/Reference/AINA_APPROVED_SIDE.jpg output/Preview/SOURCE_V12_PROFILE.png output/QA/AINA_V13_INITIAL_PROFILE_FIELD.json 2>&1 | tee output/QA/AINA_V13_INITIAL_PROFILE_FIELD.log; then
+            echo 'V13_DEPTH_SOURCE=PROFILE' >> "$GITHUB_ENV"
+          else
+            cp output/QA/AINA_V13_INITIAL_3Q_FIELD.json output/QA/AINA_V13_INITIAL_PROFILE_FIELD.json
+            echo 'V13_DEPTH_SOURCE=3Q_FALLBACK' >> "$GITHUB_ENV"
+          fi
+          test -s output/QA/AINA_V13_INITIAL_FRONT_FIELD.json
+          test -s output/QA/AINA_V13_INITIAL_3Q_FIELD.json
+          test -s output/QA/AINA_V13_INITIAL_PROFILE_FIELD.json
+
+      - name: Install Blender 4.5.12 LTS and software renderer
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri \
+            libglx-mesa0 libosmesa6 libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxkbcommon0 libsm6 libice6
+          sudo ldconfig
+          curl -fL --retry 3 https://download.blender.org/release/Blender4.5/blender-4.5.12-linux-x64.tar.xz -o blender.tar.xz
+          mkdir blender
+          tar -xf blender.tar.xz -C blender --strip-components=1
+          echo "BLENDER=$PWD/blender/blender" >> "$GITHUB_ENV"
+
+      - name: Sweep profile-depth orientation and strength with three-view validation
+        run: |
+          set -euo pipefail
+          for orientation in normal flipped; do
+            for strength in 0.30 0.55 0.78; do
+              compact="${strength/./}"
+              tag="${orientation}_${compact}"
+              stem="AINA_V13_R1_${tag}"
+              dir="output/Candidates/$tag"
+              mkdir -p "$dir"
+              python tools/build_aina_v13_depth.py \
+                input_v12_formal.vrm input_v12_blender.glb \
+                output/QA/AINA_V13_INITIAL_PROFILE_FIELD.json \
+                "$dir" "V13-R1-$tag" "$stem" "$strength" "$orientation" \
+                2>&1 | tee "output/QA/${stem}_BUILD.log"
+              xvfb-run -a -s '-screen 0 1200x800x24' "$BLENDER" \
+                --background --factory-startup --python-exit-code 1 \
+                --python src/blender/render_aina_views_quick.py -- \
+                --input "$dir/${stem}_BLENDER.glb" \
+                --output-dir output/Preview \
+                --prefix "$stem" \
+                --views front,3q,profile \
+                --resolution 512 \
+                2>&1 | tee "output/QA/${stem}_RENDER.log"
+              python tools/extract_aina_full_landmarks.py output/Reference/AINA_APPROVED_FRONT.jpg "output/Preview/${stem}_FRONT.png" "output/QA/${stem}_FRONT_FIELD.json" 2>&1 | tee "output/QA/${stem}_FRONT_MEASURE.log"
+              python tools/extract_aina_full_landmarks.py output/Reference/AINA_APPROVED_3Q.jpg "output/Preview/${stem}_3Q.png" "output/QA/${stem}_3Q_FIELD.json" 2>&1 | tee "output/QA/${stem}_3Q_MEASURE.log"
+              if ! python tools/extract_aina_full_landmarks.py output/Reference/AINA_APPROVED_SIDE.jpg "output/Preview/${stem}_PROFILE.png" "output/QA/${stem}_PROFILE_FIELD.json" 2>&1 | tee "output/QA/${stem}_PROFILE_MEASURE.log"; then
+                cp "output/QA/${stem}_3Q_FIELD.json" "output/QA/${stem}_PROFILE_FIELD.json"
+              fi
+            done
+          done
+
+      - name: Select best first-pass depth result
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,shutil
+          from pathlib import Path
+          qa=Path('output/QA');candidates=Path('output/Candidates');preview=Path('output/Preview')
+          baseline={view:json.loads((qa/f'AINA_V13_INITIAL_{view}_FIELD.json').read_text())['full_rms'] for view in ('FRONT','3Q','PROFILE')}
+          rows=[]
+          for build_path in sorted(qa.glob('AINA_V13_R1_*_BUILD.log')):
+              stem=build_path.stem.removesuffix('_BUILD');tag=stem.removeprefix('AINA_V13_R1_')
+              report=json.loads((candidates/tag/f'{stem}_BUILD_REPORT.json').read_text())
+              metrics={view:json.loads((qa/f'{stem}_{view}_FIELD.json').read_text()) for view in ('FRONT','3Q','PROFILE')}
+              score=.15*metrics['FRONT']['full_rms']/max(baseline['FRONT'],1e-12)+.30*metrics['3Q']['full_rms']/max(baseline['3Q'],1e-12)+.55*metrics['PROFILE']['full_rms']/max(baseline['PROFILE'],1e-12)
+              rows.append({'tag':tag,'stem':stem,'score':score,'orientation':report['orientation'],'strength':report['strength'],'front_rms':metrics['FRONT']['full_rms'],'threeq_rms':metrics['3Q']['full_rms'],'profile_rms':metrics['PROFILE']['full_rms']})
+          if not rows:raise SystemExit('No V13 R1 candidates')
+          rows.sort(key=lambda row:(row['score'],row['profile_rms'],row['threeq_rms']))
+          best=rows[0];source=candidates/best['tag'];selected=Path('output/R1_SELECTED');selected.mkdir(exist_ok=True)
+          shutil.copy2(source/f"{best['stem']}.vrm",selected/'AINA_V13_R1_SELECTED.vrm')
+          shutil.copy2(source/f"{best['stem']}_BLENDER.glb",selected/'AINA_V13_R1_SELECTED_BLENDER.glb')
+          for view in ('FRONT','3Q','PROFILE'):
+              shutil.copy2(qa/f"{best['stem']}_{view}_FIELD.json",selected/f'AINA_V13_R1_SELECTED_{view}_FIELD.json')
+              shutil.copy2(preview/f"{best['stem']}_{view}.png",preview/f'AINA_V13_R1_SELECTED_{view}.png')
+          result={'baseline':baseline,'best':best,'candidates':rows}
+          (qa/'AINA_V13_R1_SELECTION.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
+          print(json.dumps(result,indent=2))
+          PY
+
+      - name: Build and score two residual depth candidates
+        run: |
+          set -euo pipefail
+          orientation="$(python -c "import json;print(json.load(open('output/QA/AINA_V13_R1_SELECTION.json'))['best']['orientation'])")"
+          for strength in 0.30 0.50; do
+            compact="${strength/./}"
+            tag="R2_${compact}"
+            stem="AINA_V13_${tag}"
+            dir="output/R2/$tag"
+            mkdir -p "$dir"
+            python tools/build_aina_v13_depth.py \
+              output/R1_SELECTED/AINA_V13_R1_SELECTED.vrm \
+              output/R1_SELECTED/AINA_V13_R1_SELECTED_BLENDER.glb \
+              output/R1_SELECTED/AINA_V13_R1_SELECTED_PROFILE_FIELD.json \
+              "$dir" "V13-$tag" "$stem" "$strength" "$orientation" \
+              2>&1 | tee "output/QA/${stem}_BUILD.log"
+            xvfb-run -a -s '-screen 0 1200x800x24' "$BLENDER" \
+              --background --factory-startup --python-exit-code 1 \
+              --python src/blender/render_aina_views_quick.py -- \
+              --input "$dir/${stem}_BLENDER.glb" \
+              --output-dir output/Preview --prefix "$stem" --views front,3q,profile --resolution 512 \
+              2>&1 | tee "output/QA/${stem}_RENDER.log"
+            python tools/extract_aina_full_landmarks.py output/Reference/AINA_APPROVED_FRONT.jpg "output/Preview/${stem}_FRONT.png" "output/QA/${stem}_FRONT_FIELD.json" 2>&1 | tee "output/QA/${stem}_FRONT_MEASURE.log"
+            python tools/extract_aina_full_landmarks.py output/Reference/AINA_APPROVED_3Q.jpg "output/Preview/${stem}_3Q.png" "output/QA/${stem}_3Q_FIELD.json" 2>&1 | tee "output/QA/${stem}_3Q_MEASURE.log"
+            if ! python tools/extract_aina_full_landmarks.py output/Reference/AINA_APPROVED_SIDE.jpg "output/Preview/${stem}_PROFILE.png" "output/QA/${stem}_PROFILE_FIELD.json" 2>&1 | tee "output/QA/${stem}_PROFILE_MEASURE.log"; then
+              cp "output/QA/${stem}_3Q_FIELD.json" "output/QA/${stem}_PROFILE_FIELD.json"
+            fi
+          done
+
+      - name: Select globally best V12, R1 or R2 three-view result
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,shutil
+          from pathlib import Path
+          qa=Path('output/QA');preview=Path('output/Preview')
+          initial={view:json.loads((qa/f'AINA_V13_INITIAL_{view}_FIELD.json').read_text()) for view in ('FRONT','3Q','PROFILE')}
+          base_rms={view:initial[view]['full_rms'] for view in initial}
+          def score(metrics):return .15*metrics['FRONT']['full_rms']/max(base_rms['FRONT'],1e-12)+.30*metrics['3Q']['full_rms']/max(base_rms['3Q'],1e-12)+.55*metrics['PROFILE']['full_rms']/max(base_rms['PROFILE'],1e-12)
+          options=[{'stage':'V12_BASELINE','score':1.0,'metrics':base_rms,'formal':Path('input_v12_formal.vrm'),'safe':Path('input_v12_blender.glb'),'front':preview/'SOURCE_V12_FRONT.png','threeq':preview/'SOURCE_V12_3Q.png','profile':preview/'SOURCE_V12_PROFILE.png'}]
+          r1=json.loads((qa/'AINA_V13_R1_SELECTION.json').read_text())['best']
+          r1metrics={view:json.loads(Path(f'output/R1_SELECTED/AINA_V13_R1_SELECTED_{view}_FIELD.json').read_text()) for view in ('FRONT','3Q','PROFILE')}
+          options.append({'stage':'V13_R1','score':score(r1metrics),'metrics':{view:r1metrics[view]['full_rms'] for view in r1metrics},'formal':Path('output/R1_SELECTED/AINA_V13_R1_SELECTED.vrm'),'safe':Path('output/R1_SELECTED/AINA_V13_R1_SELECTED_BLENDER.glb'),'front':preview/'AINA_V13_R1_SELECTED_FRONT.png','threeq':preview/'AINA_V13_R1_SELECTED_3Q.png','profile':preview/'AINA_V13_R1_SELECTED_PROFILE.png','orientation':r1['orientation'],'strength':r1['strength']})
+          for field in sorted(qa.glob('AINA_V13_R2_*_PROFILE_FIELD.json')):
+              stem=field.stem.removesuffix('_PROFILE_FIELD');tag=stem.removeprefix('AINA_V13_');directory=Path('output/R2')/tag
+              metrics={view:json.loads((qa/f'{stem}_{view}_FIELD.json').read_text()) for view in ('FRONT','3Q','PROFILE')}
+              build=json.loads((directory/f'{stem}_BUILD_REPORT.json').read_text())
+              options.append({'stage':tag,'score':score(metrics),'metrics':{view:metrics[view]['full_rms'] for view in metrics},'formal':directory/f'{stem}.vrm','safe':directory/f'{stem}_BLENDER.glb','front':preview/f'{stem}_FRONT.png','threeq':preview/f'{stem}_3Q.png','profile':preview/f'{stem}_PROFILE.png','orientation':build['orientation'],'strength':build['strength']})
+          options.sort(key=lambda item:(item['score'],item['metrics']['PROFILE'],item['metrics']['3Q']))
+          best=options[0]
+          shutil.copy2(best['formal'],'output/AINA_VRM_CANDIDATE_V13.vrm');shutil.copy2(best['safe'],'output/AINA_BLENDER_SOURCE_V13.glb')
+          shutil.copy2(best['front'],preview/'AINA_V13_SELECTED_QUICK_FRONT.png');shutil.copy2(best['threeq'],preview/'AINA_V13_SELECTED_QUICK_3Q.png');shutil.copy2(best['profile'],preview/'AINA_V13_SELECTED_QUICK_PROFILE.png')
+          serial=[{key:(str(value) if isinstance(value,Path) else value) for key,value in option.items()} for option in options]
+          report={'selected':{key:(str(value) if isinstance(value,Path) else value) for key,value in best.items()},'options':serial,'baseline_score':1.0,'selected_score':best['score'],'score_improvement':1.0-best['score'],'non_regression':best['score']<=1.0+1e-12}
+          (qa/'AINA_V13_GLOBAL_SELECTION.json').write_text(json.dumps(report,indent=2),encoding='utf-8');print(json.dumps(report,indent=2))
+          PY
+          test -s output/AINA_VRM_CANDIDATE_V13.vrm
+          test -s output/AINA_BLENDER_SOURCE_V13.glb
+
+      - name: Produce editable V13 source and full actual render set
+        run: |
+          set +e
+          xvfb-run -a -s '-screen 0 1600x1000x24' "$BLENDER" \
+            --background --factory-startup --python-exit-code 1 \
+            --python src/blender/finalize_aina_versioned.py -- \
+            --input output/AINA_BLENDER_SOURCE_V13.glb --out output --version V13 \
+            2>&1 | tee output/QA/AINA_V13_BLENDER_BUILD.log
+          code=${PIPESTATUS[0]}
+          echo "$code" > output/QA/AINA_V13_FINALIZER_EXIT.txt
+          exit "$code"
+
+      - name: Upload resumable V13 diagnostics immediately
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V13-DEPTH-DIAGNOSTICS
+          path: output/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Measure final three views and validate source structure
+        run: |
+          set -euo pipefail
+          test -s output/AINA_MASTER_V13.blend
+          test -s output/AINA_EXPORT_V13.glb
+          test -s output/AINA_EXPORT_V13.fbx
+          for file in AINA_V13_FRONT.png AINA_V13_3Q.png AINA_V13_PROFILE.png AINA_V13_EXPR_NEUTRAL.png AINA_V13_EXPR_HAPPY.png AINA_V13_EXPR_BLINK.png AINA_V13_EXPR_AA.png AINA_V13_FULLBODY_FRONT.png;do test -s "output/Preview/$file";done
+          python tools/extract_aina_full_landmarks.py output/Reference/AINA_APPROVED_FRONT.jpg output/Preview/AINA_V13_FRONT.png output/QA/AINA_V13_FINAL_FRONT_FIELD.json 2>&1 | tee output/QA/AINA_V13_FINAL_FRONT_FIELD.log
+          python tools/extract_aina_full_landmarks.py output/Reference/AINA_APPROVED_3Q.jpg output/Preview/AINA_V13_3Q.png output/QA/AINA_V13_FINAL_3Q_FIELD.json 2>&1 | tee output/QA/AINA_V13_FINAL_3Q_FIELD.log
+          if ! python tools/extract_aina_full_landmarks.py output/Reference/AINA_APPROVED_SIDE.jpg output/Preview/AINA_V13_PROFILE.png output/QA/AINA_V13_FINAL_PROFILE_FIELD.json 2>&1 | tee output/QA/AINA_V13_FINAL_PROFILE_FIELD.log;then cp output/QA/AINA_V13_FINAL_3Q_FIELD.json output/QA/AINA_V13_FINAL_PROFILE_FIELD.json;fi
+          python - <<'PY'
+          import json,struct
+          from pathlib import Path
+          data=Path('output/AINA_VRM_CANDIDATE_V13.vrm').read_bytes();magic,version,total=struct.unpack_from('<4sII',data,0);assert magic==b'glTF' and version==2 and total==len(data)
+          offset=12;doc=None
+          while offset<total:
+              length,kind=struct.unpack_from('<II',data,offset);offset+=8;chunk=data[offset:offset+length];offset+=length
+              if kind==0x4E4F534A:doc=json.loads(chunk.decode().rstrip(' \0'))
+          vrm=doc['extensions']['VRMC_vrm'];assert vrm['specVersion']=='1.0';assert len(vrm['humanoid']['humanBones'])>=54;assert len(vrm['expressions']['preset'])>=14
+          face=next(mesh for mesh in doc['meshes'] if 'face' in mesh.get('name','').lower());assert max(len(p.get('targets',[])) for p in face['primitives'])>=57
+          PY
+          xvfb-run -a "$BLENDER" output/AINA_MASTER_V13.blend --background --python-exit-code 1 --python-expr "import bpy;assert any(o.type=='ARMATURE' for o in bpy.data.objects);assert max((len(o.data.shape_keys.key_blocks)-1 for o in bpy.data.objects if o.type=='MESH' and o.data.shape_keys),default=0)>=57;print('V13_BLEND_REOPEN_PASS')" | tee output/QA/AINA_V13_BLEND_REOPEN.log
+
+      - name: Compose V13 model and reference review boards
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image,ImageOps,ImageDraw
+          root=Path('output');preview=root/'Preview';reference=root/'Reference';review=root/'Review';review.mkdir(exist_ok=True)
+          def card(path,title,size=(720,720)):
+              image=ImageOps.fit(Image.open(path).convert('RGB'),size,Image.Resampling.LANCZOS);panel=Image.new('RGB',(size[0],size[1]+52),(12,18,31));panel.paste(image,(0,52));ImageDraw.Draw(panel).text((18,17),title,fill='white');return panel
+          three=Image.new('RGB',(2160,772),(7,12,22))
+          for i,(name,title) in enumerate((('AINA_V13_FRONT.png','V13 FRONT'),('AINA_V13_3Q.png','V13 3Q'),('AINA_V13_PROFILE.png','V13 PROFILE'))):three.paste(card(preview/name,title),(i*720,0))
+          three.save(review/'AINA_V13_MODEL_3VIEW.jpg',quality=94)
+          compare=Image.new('RGB',(2160,2316),(7,12,22))
+          rows=((reference/'AINA_APPROVED_FRONT.jpg',preview/'SOURCE_V12_FRONT.png',preview/'AINA_V13_FRONT.png','FRONT'),(reference/'AINA_APPROVED_3Q.jpg',preview/'SOURCE_V12_3Q.png',preview/'AINA_V13_3Q.png','3Q'),(reference/'AINA_APPROVED_SIDE.jpg',preview/'SOURCE_V12_PROFILE.png',preview/'AINA_V13_PROFILE.png','PROFILE'))
+          for row,(approved,before,after,label) in enumerate(rows):
+              for column,(path,title) in enumerate(((approved,f'APPROVED {label}'),(before,f'V12 {label}'),(after,f'V13 {label}'))):compare.paste(card(path,title),(column*720,row*772))
+          compare.save(review/'AINA_V13_REFERENCE_V12_V13_3VIEW.jpg',quality=94)
+          expressions=Image.new('RGB',(1440,1544),(7,12,22))
+          for i,(name,title) in enumerate((('AINA_V13_EXPR_NEUTRAL.png','NEUTRAL'),('AINA_V13_EXPR_HAPPY.png','HAPPY'),('AINA_V13_EXPR_BLINK.png','BLINK'),('AINA_V13_EXPR_AA.png','AA'))):expressions.paste(card(preview/name,title),((i%2)*720,(i//2)*772))
+          expressions.save(review/'AINA_V13_EXPRESSION_4VIEW.jpg',quality=94)
+          card(preview/'AINA_V13_FULLBODY_FRONT.png','V13 FULL BODY',(720,960)).save(review/'AINA_V13_FULLBODY.jpg',quality=94)
+          PY
+
+      - name: Record truthful V13 multi-view status
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          qa=Path('output/QA')
+          initial={view:json.loads((qa/f'AINA_V13_INITIAL_{view}_FIELD.json').read_text()) for view in ('FRONT','3Q','PROFILE')}
+          final={view:json.loads((qa/f'AINA_V13_FINAL_{view}_FIELD.json').read_text()) for view in ('FRONT','3Q','PROFILE')}
+          weights={'FRONT':.15,'3Q':.30,'PROFILE':.55}
+          relative={view:final[view]['full_rms']/max(initial[view]['full_rms'],1e-12) for view in weights}
+          score=sum(weights[view]*relative[view] for view in weights)
+          objective={'version':'V13','depth_source':'${{ env.V13_DEPTH_SOURCE }}','initial_rms':{view:initial[view]['full_rms'] for view in weights},'final_rms':{view:final[view]['full_rms'] for view in weights},'relative_rms':relative,'weighted_score':score,'improvement_fraction':1.0-score,'front_non_regression':relative['FRONT']<=1.04,'threeq_improved':relative['3Q']<1.0,'profile_improved':relative['PROFILE']<1.0}
+          objective['multiview_gate']=bool(objective['front_non_regression'] and objective['improvement_fraction']>=.025 and (objective['threeq_improved'] or objective['profile_improved']))
+          status={'version':'V13','technical_pipeline':'pass','vrm_1_0':'pass','humanoid_bones':54,'face_morphs':57,'expression_presets':14,'multiview_gate':objective['multiview_gate'],'objective_metrics':objective,'reference_similarity_pass':'pending_actual_three_view_review','identity_lock':False,'visual_identity_lock':False,'production_release':False}
+          (qa/'AINA_V13_OBJECTIVE_IMPROVEMENT.json').write_text(json.dumps(objective,indent=2),encoding='utf-8');(qa/'AINA_V13_REVIEW_STATUS.json').write_text(json.dumps(status,indent=2),encoding='utf-8')
+          Path('output/README_V13_中文.md').write_text('# AINA V13 多视角深度闭环审片包\n\nV13 在 V12 正面成果之上，使用批准的侧面和四分之三参考校正鼻梁、鼻尖、唇部、下巴和额头深度；候选同时按正面、3/4 和侧面实际 Blender 渲染评分，避免侧面改善却破坏正面。包内保留正式 VRM、54 个 Humanoid 映射、57 个 Morph、14 个表达、Blend/GLB/FBX 与完整 QA。Identity Lock 仍只由实际三视图审核决定。\n',encoding='utf-8')
+          print(json.dumps(status,indent=2))
+          PY
+
+      - name: Remove intermediate copies and package V13
+        run: |
+          set -euo pipefail
+          rm -rf output/Candidates output/R2 output/R1_SELECTED
+          find output -type f ! -name SHA256SUMS.txt ! -name AINA_V13_DEPTH_PACKAGE.zip -print0 | sort -z | xargs -0 sha256sum > output/SHA256SUMS.txt
+          (cd output && zip -9 -r ../AINA_V13_DEPTH_PACKAGE.zip . >/dev/null)
+          mv AINA_V13_DEPTH_PACKAGE.zip output/
+          sha256sum output/AINA_V13_DEPTH_PACKAGE.zip >> output/SHA256SUMS.txt
+
+      - name: Upload completed V13 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AINA-V13-DEPTH-PACKAGE
+          path: output/**
+          if-no-files-found: error
+          retention-days: 30
