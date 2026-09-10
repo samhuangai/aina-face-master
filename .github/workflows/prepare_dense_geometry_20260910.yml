@@ -1,0 +1,35 @@
+name: Prepare AINA Dense Geometry Research Tools
+on:
+  push:
+    branches: [aina-reference-rebuild-20260906]
+    paths: [.github/workflows/prepare_dense_geometry_20260910.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Retrieve public geometry source, model and notices
+        run: |
+          set -euo pipefail
+          mkdir -p output/wheels
+          git clone --depth 1 https://github.com/microsoft/MoGe.git output/MoGe
+          git -C output/MoGe rev-parse HEAD > output/MOGE_COMMIT.txt
+          rm -rf output/MoGe/.git
+          curl -fL --retry 2 --max-time 300 https://huggingface.co/Ruicheng/moge-2-vitb-normal/resolve/main/model.pt -o output/moge2-b.pt
+          curl -fL --retry 2 --max-time 30 https://huggingface.co/Ruicheng/moge-2-vitb-normal/raw/main/README.md -o output/MODEL_CARD.md
+          python -m pip download --no-deps --dest output/wheels utils3d-moge
+          cat output/MoGe/requirements.txt
+          sha256sum output/moge2-b.pt > output/MODEL_SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AINA-DENSE-GEOMETRY-TOOLS-20260910
+          path: output/
+          compression-level: 0
+          retention-days: 2
+          if-no-files-found: error
